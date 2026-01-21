@@ -1,1 +1,1 @@
-__all__ = ['dipolar', 'functions', 'gamma']
+__all__ = ['dipolar', 'functions', 'gamma', 'simspon', 'error', 'utils']

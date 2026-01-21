@@ -1,8 +1,9 @@
 """
 Useful python classes and functions for handling DRENAR data. 
 
-Author: Yufei Wu, Julius Schlueter
-Date: 2025-08-08
+Author(s): Yufei Wu, Julius Schlueter
+Created on: 2025/08/08
+Last modified: 2026/01/21
 """
 
 import os

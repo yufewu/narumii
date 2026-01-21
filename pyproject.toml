@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "narumii"
-version = "0.0.3"
+version = "0.1.0"
 authors = [
   { name="Yufei Wu", email="yufei.wu@cec.mpg.de" },
 ]
 description = "NaRuMii, a personalized toolbox for NMR data analysis. 笑顔になるなる :)"
 readme = "README.md"
-requires-python = ">=3.9"
-dependencies = ["numpy==2.2.2","scipy==1.15.1","matplotlib"]
+requires-python = ">=3.10"
+dependencies = ["numpy>=2.2","scipy>=1.15","matplotlib>=3.9"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
