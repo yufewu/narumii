@@ -10,6 +10,7 @@ from narumii.functions import compute_rmsd
 
 def create_filenames(
         basename: str, 
+        template: str | None = None,
         **kwargs: dict[str, str]
     ) -> dict[str, str]:
     """
@@ -28,10 +29,14 @@ def create_filenames(
         Container for filenames, with keys: 'template', 'input', 'output', 'log', etc..
     """
     filenames = {}
-    filenames['template'] = basename + '.template'
     filenames['input'] = basename + '.in'
     filenames['output'] = basename + '.fid'
     filenames['log'] = basename + '.log'
+
+    if template is not None:
+        filenames['template'] = template
+    else:
+        filenames['template'] = basename + '.template'
 
     for key, value in kwargs.items():
         filenames[key] = value
