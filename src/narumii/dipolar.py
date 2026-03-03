@@ -9,6 +9,7 @@ Last modified: 2026/01/21
 import os
 from pathlib import PurePath
 import warnings
+from matplotlib.pylab import gamma
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -84,7 +85,54 @@ class Fid_triple(Fid_single):
         self.data = np.reshape(self.data, (3, -1))
 
 
-class CTDrenar:
+class CTDrenar(Fid_single):
+    def __init__(self, 
+                 filename: str, 
+                 phase_range: tuple[float, float] = (0, 180),
+                 phase_increment: float | None = None, 
+                 n_points: int | None = None,
+                 idx_reference: int | None = None,
+                 verbose=False, 
+                 **kwargs
+                 ) -> None:
+        
+        super().__init__(filename, **kwargs)
+
+        self.phase_range = phase_range
+        self.verbose = verbose
+
+        if phase_increment is not None:
+            self.phase_increment = phase_increment
+            if n_points is not None:
+                self.n_points = n_points
+                if self.phase_increment != (self.phase_range[1] - self.phase_range[0]) / (self.n_points - 1):
+                    raise ValueError("Provided phase_increment does not match the calculated increment from phase_range and n_points.")
+            else:
+                self.n_points = int((self.phase_range[1] - self.phase_range[0]) / self.phase_increment) + 1
+        else:
+            if n_points is not None:
+                self.n_points = n_points
+                self.phase_increment = (self.phase_range[1] - self.phase_range[0]) / (self.n_points - 1)
+            else:
+                self.phase_increment = 18.0
+                self.n_points = 11
+
+        if idx_reference is not None:
+            self.idx_reference = idx_reference
+        elif self.n_points %2 == 0:
+                warnings.warn("Even number of points, the reference point cannot be found.")
+        else:
+            self.idx_reference = self.n_points // 2   # python index, starting from 0
+        
+        self.phase_discrete = np.linspace(self.phase_range[0], self.phase_range[1], num=self.n_points)
+        
+        self.dephasing = self.data
+        self.reference = np.ones(self.n_points) * self.data[self.idx_reference]
+        if np.any(self.reference == 0):
+            raise ValueError("Reference contains zero(s), cannot divide.")
+        self.difference = 1 - self.dephasing/self.reference
+
+class CTDrenar_old:
     def __init__(self, file_path, l0=None, spin_rate=None, gamma=None, verbose=False, ):
         
         self.file_path = file_path
