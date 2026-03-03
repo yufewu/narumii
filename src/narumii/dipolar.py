@@ -11,13 +11,11 @@ from pathlib import PurePath
 import warnings
 import numpy as np
 import matplotlib.pyplot as plt
-import warnings
 
 
 def read_fid(
-        filename: str, 
-        only_real: bool = True
-        ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+        filename: str
+        ) -> tuple[np.ndarray, np.ndarray]:
     
     with open(filename, 'r') as f:
         data = []
@@ -41,19 +39,15 @@ def read_fid(
         if n_rows is None:
             raise ValueError("NP value not found in the .fid file.")
 
-        data_real = np.array(data)[:, 0]  # use first column
-        data_imag = np.array(data)[:, 1]  # use second column if needed
+    data_real = np.array(data)[:, 0]  # use first column
+    data_imag = np.array(data)[:, 1]  # use second column if needed
 
-    if only_real:
-        return data_real
-    else:
-        return data_real, data_imag
+    return data_real, data_imag
 
 
-class Data_single_fid:
+class Fid_single:
     def __init__(self, 
                  filename: str, 
-                 only_real: bool = True,
                  **kwargs
                  ) -> None:
         
@@ -61,17 +55,34 @@ class Data_single_fid:
         if PurePath(filename).suffix == '.txt':
             self.data = np.loadtxt(filename, **kwargs)
         elif PurePath(filename).suffix == '.fid':
-            self.data = read_fid(filename, only_real=only_real)
+            self.data, _ = read_fid(filename)
         else:
             raise TypeError("File must be .txt or .fid! ")
 
 
-class Data_pair_fid:
-    pass
+class Fid_pair(Fid_single):
+    def __init__(self, 
+                 filename: str, 
+                 **kwargs
+                 ) -> None:
+        
+        super().__init__(filename, **kwargs)
+        if self.data.shape[0] % 2 == 1:
+            raise ValueError("Data length is odd, cannot be reshaped into pairs.")
+        self.data = np.reshape(self.data, (2, -1))
 
 
-class Data_triple_fid:
-    pass
+class Fid_triple(Fid_single):
+    def __init__(self, 
+                 filename: str, 
+                 **kwargs
+                 ) -> None:
+        
+        super().__init__(filename, **kwargs)
+        if self.data.shape[0] % 3 != 0:
+            raise ValueError("Data length is not divisible by 3, cannot be reshaped into triples.")
+        self.data = np.reshape(self.data, (3, -1))
+
 
 class CTDrenar:
     def __init__(self, file_path, l0=None, spin_rate=None, gamma=None, verbose=False, ):
