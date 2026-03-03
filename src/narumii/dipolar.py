@@ -7,9 +7,71 @@ Last modified: 2026/01/21
 """
 
 import os
+from pathlib import PurePath
+import warnings
 import numpy as np
 import matplotlib.pyplot as plt
+import warnings
 
+
+def read_fid(
+        filename: str, 
+        only_real: bool = True
+        ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    
+    with open(filename, 'r') as f:
+        data = []
+        n_rows = None
+        in_data_section = False
+
+        with open(filename, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith('NP='):
+                    n_rows = int(line.split('=')[1])
+                elif line == 'DATA':
+                    in_data_section = True
+                elif line == 'END':
+                    break
+                elif in_data_section:
+                    if line:  # skip empty lines
+                        values = [float(x) for x in line.split()]
+                        data.append(values)
+                        
+        if n_rows is None:
+            raise ValueError("NP value not found in the .fid file.")
+
+        data_real = np.array(data)[:, 0]  # use first column
+        data_imag = np.array(data)[:, 1]  # use second column if needed
+
+    if only_real:
+        return data_real
+    else:
+        return data_real, data_imag
+
+
+class Data_single_fid:
+    def __init__(self, 
+                 filename: str, 
+                 only_real: bool = True,
+                 **kwargs
+                 ) -> None:
+        
+        self.filename = filename
+        if PurePath(filename).suffix == '.txt':
+            self.data = np.loadtxt(filename, **kwargs)
+        elif PurePath(filename).suffix == '.fid':
+            self.data = read_fid(filename, only_real=only_real)
+        else:
+            raise TypeError("File must be .txt or .fid! ")
+
+
+class Data_pair_fid:
+    pass
+
+
+class Data_triple_fid:
+    pass
 
 class CTDrenar:
     def __init__(self, file_path, l0=None, spin_rate=None, gamma=None, verbose=False, ):
@@ -259,6 +321,8 @@ class Redor:
             ext = os.path.splitext(file_path)[1].lower()
             if ext == '.txt':
                 self.read_txt()
+            elif ext == '.fid':
+                self.read_fid()
             else:
                 raise TypeError("File must be .txt or .fid! ")
         except TypeError as te:
@@ -288,6 +352,54 @@ class Redor:
         self.time_discrete = 1/self.spin_rate * np.linspace(self.l0+1, 2*self.l10*(self.n_points-1)+self.l0+1, num=self.n_points)  # in ms if spin_rate in kHz
         self.time_continuous = np.linspace(0, self.time_discrete[-1], num=100)
         
+        print(f"\n{self.n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
+
+        print("\nList of data: ") if self.verbose else ""
+        print(self.data) if self.verbose else ""
+        print("\nList of differences: ") if self.verbose else ""
+        print(self.difference) if self.verbose else ""
+
+
+    def read_fid(self):
+        print("reading fid") if self.verbose else ""
+        data = []
+        n_rows = None
+        in_data_section = False
+
+        with open(self.file_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith('NP='):
+                    n_rows = int(line.split('=')[1])
+                elif line == 'DATA':
+                    in_data_section = True
+                elif line == 'END':
+                    break
+                elif in_data_section:
+                    if line:  # skip empty lines
+                        values = [float(x) for x in line.split()]
+                        data.append(values)
+                        
+        if n_rows is None:
+            raise ValueError("NP value not found in the .fid file.")
+        
+        self.data = np.array(data)[:, 0]  # use first column
+        
+        if n_rows%2 == 1:
+            warnings.warn("\nPairwise acquisition not detected. ")
+        self.pair_acquisition = True
+        self.n_points = n_rows - 1
+
+        self.reference = np.ones(self.n_points) * self.data[0]
+        self.dephasing = self.data[1:]
+
+        if np.any(self.reference == 0):
+            raise ValueError("Reference contains zero(s), cannot divide.")
+            
+        self.difference = 1 - self.dephasing/self.reference
+        self.time_discrete = 1/self.spin_rate * np.linspace(self.l0+1, 2*self.l10*(self.n_points-1)+self.l0+1, num=self.n_points)  # in ms if spin_rate in kHz
+        self.time_continuous = np.linspace(0, self.time_discrete[-1], num=100)
+            
         print(f"\n{self.n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
 
         print("\nList of data: ") if self.verbose else ""
