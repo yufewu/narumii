@@ -1,4 +1,18 @@
 import sys
+import numpy as np
+from typing import TextIO
+
+
+def read_results(
+        filename: str, 
+        skiprows: int = 1
+        ) -> np.ndarray:
+    
+    results = np.loadtxt(filename, delimiter=",", skiprows=skiprows)
+    results = results.transpose()
+
+    return results
+
 
 class Tee:
     '''
@@ -11,13 +25,13 @@ class Tee:
     '''
     def __init__(
         self, 
-        *files: object
+        *files: TextIO
         ) -> None:
         self.files = files
     
     def write(
         self, 
-        obj: object
+        obj: str
         ) -> None:
         for f in self.files:
             f.write(obj)
