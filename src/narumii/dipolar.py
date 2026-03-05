@@ -9,11 +9,13 @@ Last modified: 2026/03/05
 import os
 from pathlib import PurePath
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
-from .functions import ctdrenar
+from scipy.constants import pi, physical_constants
+from functions import ctdrenar, redor_bessel
+import gamma
 
 # packages for type-hint
 from typing import Any, Callable
@@ -84,6 +86,25 @@ def set_phases(
 
     return phase_range, phase_increment
 
+
+def set_times(
+        l0: int, 
+        l10: int, 
+        spin_rate: float, 
+        n_points: int, 
+        rotor_cycles_beginning: Callable,
+        rotor_cycles_increment: Callable, 
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    
+    """
+    n_rotor_cycles = np.linspace(rotor_cycles_beginning(l0), 
+                                 rotor_cycles_increment(l10) * (n_points - 1) + rotor_cycles_beginning(l0), 
+                                 num=n_points)
+    time_discrete = 1/spin_rate * n_rotor_cycles  # in ms if spin_rate in kHz
+    time_continuous = np.linspace(0, time_discrete[-1], num=100)
+
+    return n_rotor_cycles, time_discrete, time_continuous
 
 class Fid_single:
     """
@@ -417,203 +438,225 @@ class CTDrenar(Fid_single):
 
 @dataclass
 class Redor(Fid_pair):
-    def __init__(self, file_path, l10, spin_rate, l0=1, gamma=[None, None], n_points=None, verbose=False, ):
-        
-        self.file_path = file_path
-        self.l10 = l10
-        self.l0 = l0
-        self.spin_rate = spin_rate
-        self.gamma = gamma
-        self.n_points = n_points
-        self.verbose = verbose
-        
-        self.dephasing_time = None
-        self.data = None
-        self.dephasing = None
-        self.reference = None
-        self.difference = None
-        
+    """
+    A class for handling REDOR data, which is a double-FID acquisition experiment with time incrementation. 
 
-        self.fitting = None
-        
-        self.popt = None
-        self.pconv = None
-        self.z_opt = None
-        self.d_opt = None
-        self.r_opt = None
-        
-        try: 
-            ext = os.path.splitext(file_path)[1].lower()
-            if ext == '.txt':
-                self.read_txt()
-            elif ext == '.fid':
-                self.read_fid()
-            else:
-                raise TypeError("File must be .txt or .fid! ")
-        except TypeError as te:
-            print(te)
-        #except Exception as e:
-            #print(f"Error reading file: {e}")
-            
+    Attributes:
+    - filename: str, input file path
+    - l0: int, rotor cycles for the first point (default: None, must be provided for calculating dephasing time)
+    - l10: int, increment constant defined in the pulse program (default: None, must be provided for calculating dephasing time)
+    - spin_rate: float, spinning rate in kHz (default: None, must be provided for calculating dephasing time)
+    - gamma_I: float, gyromagnetic ratio of the observed nucleus in MHz/T (default: None, must be provided for calculating distance from coupling constant)
+    - gamma_S: float, gyromagnetic ratio of the dephasing nucleus in MHz/T (default: None, must be provided for calculating distance from coupling constant)
+    - verbose: bool, whether to print detailed information during initialization (default: False)
+    """
+    filename: str
+    l0: int | None = None
+    l10: int | None = None
+    spin_rate: float | None = None
+    gamma_I: float | None = None
+    gamma_S: float | None = None
+    verbose: bool = False
 
-    def read_txt(self):
-        print("reading txt") if self.verbose else ""
-        with open(self.file_path, 'r') as f:
-            self.data = np.loadtxt(f)
-            n_rows = self.data.shape[0]
-        
+    n_points: int = field(init=False)
+    n_rotor_cycles: np.ndarray = field(init=False)
+    time_discrete: np.ndarray = field(init=False)
+    time_continuous: np.ndarray = field(init=False)
+
+    dephasing: np.ndarray = field(init=False)
+    reference: np.ndarray = field(init=False)
+    difference: np.ndarray = field(init=False)
+
+    popt: np.ndarray = field(init=False)
+    pconv: np.ndarray = field(init=False)
+    z_opt: float = field(init=False)
+    d_opt: float = field(init=False)
+    r_opt: float = field(init=False)
+
+    def __post_init__(self):
+        """
+        Initialization: read data from .txt or .fid file and process the data to generate difference array and the time axis for each point. 
+        The time axis is calculated based on l0, l10, and spin rate if they are provided.
+
+        Parameters:
+        - filename: str, input file path
+        - l0: int, rotor cycles for the first point (default: None, must be provided for calculating dephasing time)
+        - l10: int, increment constant defined in the pulse program (default: None, must be provided for calculating dephasing time)
+        - spin_rate: float, spinning rate in kHz (default: None, must be provided for calculating dephasing time)
+        - gamma_I: float, gyromagnetic ratio of the observed nucleus in MHz/T (default: None, must be provided for calculating distance from coupling constant)
+        - gamma_S: float, gyromagnetic ratio of the dephasing nucleus in MHz/T (default: None, must be provided for calculating distance from coupling constant)
+        - verbose: bool, whether to print detailed information during initialization (default: False)
+        """
+        super().__init__(self.filename)
         if self.n_points is None:
-            self.n_points = n_rows//2
-        self.data = np.reshape(self.data, (2, -1))
-        self.data = self.data[:,0:self.n_points]
+            self.n_points = np.shape(self.data)[1]          
             
         self.dephasing = self.data[0,:]
         self.reference = self.data[1,:]
-        
         if np.any(self.reference == 0):
             raise ValueError("Reference contains zero(s), cannot divide.")
         self.difference = 1 - self.dephasing/self.reference
-        
-        self.time_discrete = 1/self.spin_rate * np.linspace(self.l0+1, 2*self.l10*(self.n_points-1)+self.l0+1, num=self.n_points)  # in ms if spin_rate in kHz
-        self.time_continuous = np.linspace(0, self.time_discrete[-1], num=100)
-        
-        print(f"\n{self.n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
-
-        print("\nList of data: ") if self.verbose else ""
-        print(self.data) if self.verbose else ""
-        print("\nList of differences: ") if self.verbose else ""
-        print(self.difference) if self.verbose else ""
-
-
-    def read_fid(self):
-        print("reading fid") if self.verbose else ""
-        data = []
-        n_rows = None
-        in_data_section = False
-
-        with open(self.file_path, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith('NP='):
-                    n_rows = int(line.split('=')[1])
-                elif line == 'DATA':
-                    in_data_section = True
-                elif line == 'END':
-                    break
-                elif in_data_section:
-                    if line:  # skip empty lines
-                        values = [float(x) for x in line.split()]
-                        data.append(values)
-                        
-        if n_rows is None:
-            raise ValueError("NP value not found in the .fid file.")
-        
-        self.data = np.array(data)[:, 0]  # use first column
-        
-        if n_rows%2 == 1:
-            warnings.warn("\nPairwise acquisition not detected. ")
-        self.pair_acquisition = True
-        self.n_points = n_rows - 1
-
-        self.reference = np.ones(self.n_points) * self.data[0]
-        self.dephasing = self.data[1:]
-
-        if np.any(self.reference == 0):
-            raise ValueError("Reference contains zero(s), cannot divide.")
-            
-        self.difference = 1 - self.dephasing/self.reference
-        self.time_discrete = 1/self.spin_rate * np.linspace(self.l0+1, 2*self.l10*(self.n_points-1)+self.l0+1, num=self.n_points)  # in ms if spin_rate in kHz
-        self.time_continuous = np.linspace(0, self.time_discrete[-1], num=100)
-            
-        print(f"\n{self.n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
 
         print("\nList of data: ") if self.verbose else ""
         print(self.data) if self.verbose else ""
         print("\nList of differences: ") if self.verbose else ""
         print(self.difference) if self.verbose else ""
         
-        
-    def to_fid(self, filename):
-        if not hasattr(self, 'dephasing'):
-            raise AttributeError("Data does not exist.")
-        
-        with open(filename, 'w') as f:
-            f.write('SIMP\n')
-            f.write(f'NP={self.n_points}\n')
-            f.write('SW=100000\n')
-            f.write('TYPE=FID\n')
-            f.write('DATA\n')
-            for value in self.dephasing/self.reference:
-                f.write(f'{value} 0\n')
-            f.write('END\n')
-            
-        
-    def plot_difference(self, xlim=None, ylim=None, color='blue', label=None, show_legend=False, **kwargs):
-        if not hasattr(self, 'time_discrete') or not hasattr(self, 'difference'):
-            raise AttributeError("Data does not exist. Run read_txt() first.")
+        if isinstance(self.l0, Number) and isinstance(self.l10, Number) and isinstance(self.spin_rate, Number):
+            self.n_rotor_cycles, self.time_discrete, self.time_continuous = set_times(self.l0, 
+                                                                                      self.l10, 
+                                                                                      self.spin_rate, 
+                                                                                      self.n_points, 
+                                                                                      self._rotor_cycle_initial, 
+                                                                                      self._rotor_cycle_increment)
+            print(f"\n{self.n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
 
-        fig, ax = plt.subplots(figsize=(8, 4), constrained_layout=True)
-        ax.scatter(self.time_discrete, self.difference)
-        ax.set_xlabel('REDOR time (ms)')
+
+    def _rotor_cycle_initial(self, 
+                             l0: int
+                             ) -> int:
+        """
+        Private method: calculate the number of rotor cycles for the first point based on l0, defined by how the pulse program is written. 
+
+        Parameters:
+        - l0: int, defined in the pulse program
+
+        Returns:
+        - int, rotor cycles for the first point
+        """
+        return l0 + 1
+
+
+    def _rotor_cycle_increment(self,
+                               l10: int
+                               ) -> int:
+        """
+        Private method: calculate the increment of rotor cycles for each point based on l10, defined by how the pulse program is written. Here each l10 corresponds to 2 rotor cycles. 
+        
+        Parameters:
+        - l10: int, increment constant defined in the pulse program
+
+        Returns:
+        - int, increment of rotor cycles
+        """
+        return 2 * l10
+    
+
+    def plot_difference(self, 
+                        xlim: tuple[float, float] | None = None, 
+                        ylim: tuple[float, float] | None = None, 
+                        figure_size: tuple[float, float] = (4, 4),
+                        show_legend: bool = False, 
+                        **kwargs: Any
+                        ) -> tuple[Figure, Axes]:
+        """
+        Plot the difference (1 - S/S₀) against the phase angle.
+
+        Parameters:
+        - xlim: tuple, limits for x-axis
+        - ylim: tuple, limits for y-axis
+        - figure_size: tuple, size of the figure (width, height)
+        - show_legend: bool, whether to show legend
+        - **kwargs: additional keyword arguments for plt.plot()
+
+        Returns: 
+        - fig: Figure, the created figure object
+        - ax: Axes, the created axes object
+        """
+        if self.time_discrete is None:
+            if isinstance(self.l0, Number) and isinstance(self.l10, Number) and isinstance(self.spin_rate, Number):
+                self.n_rotor_cycles, self.time_discrete, self.time_continuous = set_times(self.l0, 
+                                                                                        self.l10, 
+                                                                                        self.spin_rate, 
+                                                                                        self.n_points, 
+                                                                                        self._rotor_cycle_initial, 
+                                                                                        self._rotor_cycle_increment)
+                print(f"\n{self.n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
+            else:
+                raise AttributeError("Time axis does not exist. Please specify l0, l10, and n_points.")
+
+        fig, ax = plt.subplots(figsize=figure_size, constrained_layout=True)
+        ax.plot(self.time_discrete, self.difference, **kwargs)
+        ax.set_xlabel('Recoupling time (ms)')
         ax.set_ylabel('1 - S/S₀')
         
         if xlim:
             ax.set_xlim(xlim)
         if ylim:
             ax.set_ylim(ylim)
-        if show_legend and label:
+        if show_legend:
             ax.legend()
         
         plt.show()
+
+        return fig, ax
         
-                
-    def fit(self, function):
-        try: 
-            if self.gamma[0] is None or self.gamma[1] is None:
-                raise ValueError("Gamma values are not provided! ")
-            else:
-                self.gamma[0] = abs(self.gamma[0])
-                self.gamma[1] = abs(self.gamma[1])
-        except TypeError as te:
-            print(te)
-        
-        from scipy.optimize import curve_fit
-        from scipy.constants import pi
-        from scipy.constants import physical_constants
-        
+
+    def fit(self, 
+            function: Callable = redor_bessel(5), 
+            ) -> tuple[float, float | None]:
+        """
+        Fit REDOR data with the analytical function and calculate the effective dipolar coupling constant.
+
+        Parameters:
+        - function: callable, the function to fit the data (default: ctdrenar)
+
+        Returns:
+        - beff_opt: float, effective dipolar coupling constant from fitting, in kHz
+        - r_opt: float, optimized distance from the fitting, in Å, if time axis is not provided
+        """
         self.popt, self.pconv = curve_fit(function, self.time_discrete, self.difference, bounds=(0, np.inf))
         #perr = np.sqrt(np.diag(pconv))  # standard deviation
-        self.d_opt = self.popt[0]
+        self.beff_opt = self.popt[0]
+        self.predict = function(self.time_continuous, self.beff_opt)
+        print(f'Effective dipolar coupling constant by analytical fitting = {self.beff_opt*1000:.1f} Hz') if self.verbose else ""
 
-        print(f'Effective dipolar coupling constant by fitting = {self.d_opt:.3f} kHz')
+        if self.gamma_I is None or self.gamma_S is None:
 
-        mu_0 = physical_constants['vacuum mag. permeability'][0]
-        hbar = physical_constants['reduced Planck constant'][0]
-        self.r_opt = (mu_0 / (4*pi) * (self.gamma[0]*self.gamma[1]*hbar) / (2*pi) / self.popt[0] /1000)**(1/3) * 10**9  # in nm
-        print('Fitted r = {:.3f} nm'.format(self.r_opt))
+            return self.beff_opt, None
+        else:
+            mu_0 = physical_constants['vacuum mag. permeability'][0]
+            hbar = physical_constants['reduced Planck constant'][0]
+            self.r_opt = (mu_0 / (4*pi) * abs(self.gamma_I*self.gamma_S*hbar) / (2*pi) / self.beff_opt /1000)**(1/3) * 10**10  # in angstrom
+            print(f'Effective distance by analytical fitting = {self.r_opt:.3f} Å') if self.verbose else ""
 
-        if self.dephasing_time is not None:
-            self.d_opt = np.sqrt(self.z_opt)/self.dephasing_time
-            print(f'Effective dipolar coupling constant by fitting = {self.d_opt:.3f} kHz')
+            return self.beff_opt, self.r_opt
         
-        self.predict = function(self.time_continuous, self.d_opt)
 
+    def plot_fit(self, 
+                xlim: tuple[float, float] | None = None, 
+                ylim: tuple[float, float] | None = None, 
+                figure_size: tuple[float, float] = (4, 4),
+                color = '#0092c8', 
+                show_legend: bool = False, 
+                ) -> tuple[Figure, Axes]:
+        """
+        Plotting the fitted curve together with the experimental data.
+
+        Parameters:
+        - xlim: tuple, limits for x-axis
+        - ylim: tuple, limits for y-axis
+        - figure_size: tuple, size of the figure (width, height)
+        - color: str, color for both experimental data and fitted curve (default: '#0092c8')
+        - show_legend: bool, whether to show legend
         
-    def plot_fit(self, xlim=None, ylim=None, color='blue', label=None, show_legend=False, **kwargs):
-        if not hasattr(self, 'time_discrete') or not hasattr(self, 'difference'):
-            raise AttributeError("Data does not exist. Run read_txt() first.")
-
-        fig, ax = plt.subplots(figsize=(8, 4), constrained_layout=True)
-        ax.scatter(self.time_discrete, self.difference)
-        ax.plot(self.time_continuous, self.predict)
-        ax.set_xlabel('REDOR time (ms)')
+        Returns:
+        - fig: Figure, the created figure object
+        - ax: Axes, the created axes object
+        """
+        fig, ax = plt.subplots(figsize=figure_size, constrained_layout=True)
+        ax.plot(self.time_discrete, self.difference, marker='o', linestyle='none', color=color, label='experiment')
+        ax.plot(self.time_continuous, self.predict, marker='none', linestyle='-', color=color, label='analytical fit')
+        ax.set_xlabel('Recoupling time (ms)')
         ax.set_ylabel('1 - S/S₀')
-        
+
         if xlim:
             ax.set_xlim(xlim)
         if ylim:
             ax.set_ylim(ylim)
-        if show_legend and label:
+        if show_legend:
             ax.legend()
-        
+
         plt.show()
+        
+        return fig, ax
