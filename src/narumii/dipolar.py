@@ -660,3 +660,61 @@ class Redor(Fid_pair):
         plt.show()
         
         return fig, ax
+
+
+@dataclass
+class Redor3(Redor): 
+    """
+    Class for handling compensated REDOR data, see https://doi.org/10.1006/jmre.2000.2191
+    """
+    alpha: float = 1
+    
+    compensation: np.ndarray = field(init=False)
+
+    def __post_init__(self):
+        """
+        Initialization: read data from .txt or .fid file and process the data to generate difference array and the time axis for each point. 
+        The time axis is calculated based on l0, l10, and spin rate if they are provided.
+
+        Parameters:
+        - filename: str, input file path
+        - alpha: float, compensation factor defined in the pulse program (default: 1)
+        - l0: int, rotor cycles for the first point (default: None, must be provided for calculating dephasing time)
+        - l10: int, increment constant defined in the pulse program (default: None, must be provided for calculating dephasing time)
+        - spin_rate: float, spinning rate in kHz (default: None, must be provided for calculating dephasing time)
+        - gamma_I: float, gyromagnetic ratio of the observed nucleus in MHz/T (default: None, must be provided for calculating distance from coupling constant)
+        - gamma_S: float, gyromagnetic ratio of the dephasing nucleus in MHz/T (default: None, must be provided for calculating distance from coupling constant)
+        - verbose: bool, whether to print detailed information during initialization (default: False)
+        """
+        if PurePath(self.filename).suffix == '.txt':
+            self.data = np.loadtxt(self.filename)
+        elif PurePath(self.filename).suffix == '.fid':
+            self.data, _ = read_fid(self.filename)
+        else:
+            raise TypeError("File must be .txt or .fid! ")
+        if self.data.shape[0] % 3 == 1:
+            raise ValueError("Data length is not divisible by 3, cannot be reshaped into triplets.")
+        self.data = np.reshape(self.data, (3, -1))
+        if self.n_points is None:
+            self.n_points = np.shape(self.data)[1]          
+            
+        self.dephasing = self.data[0,:]
+        self.compensation = self.data[1,:]
+        self.reference = self.data[2,:]
+        if np.any(self.reference == 0):
+            raise ValueError("Reference contains zero(s), cannot divide.")
+        self.difference = 1 + self.alpha - self.dephasing/self.reference - self.alpha*self.compensation/self.reference
+
+        print("\nList of data: ") if self.verbose else ""
+        print(self.data) if self.verbose else ""
+        print("\nList of differences: ") if self.verbose else ""
+        print(self.difference) if self.verbose else ""
+        
+        if isinstance(self.l0, Number) and isinstance(self.l10, Number) and isinstance(self.spin_rate, Number):
+            self.n_rotor_cycles, self.time_discrete, self.time_continuous = set_times(self.l0, 
+                                                                                      self.l10, 
+                                                                                      self.spin_rate, 
+                                                                                      self.n_points, 
+                                                                                      self._rotor_cycle_initial, 
+                                                                                      self._rotor_cycle_increment)
+            print(f"\n{self.n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
