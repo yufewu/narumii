@@ -3,9 +3,14 @@ import numpy as np
 import time
 import subprocess
 import warnings
+from dataclasses import dataclass, field
 from scipy.optimize import minimize_scalar
-from narumii.dipolar import CTDrenar
+from narumii.dipolar import CTDrenar, Redor
 from narumii.functions import compute_rmsd
+
+# packages for type-hint
+from typing import Any, Callable
+from scipy.optimize import OptimizeResult
 
 
 def create_filenames(
@@ -33,10 +38,7 @@ def create_filenames(
     filenames['output'] = basename + '.fid'
     filenames['log'] = basename + '.log'
 
-    if template is not None:
-        filenames['template'] = template
-    else:
-        filenames['template'] = basename + '.template'
+    filenames['template'] = basename + '.template' if template is None else template
 
     for key, value in kwargs.items():
         filenames[key] = value
@@ -45,9 +47,7 @@ def create_filenames(
 
 def create_input_file(
     filenames: dict[str, str], 
-    params: dict[str, str | float] | None = None, 
-    angle_set: list[float] | None = None, 
-    b: float | None = None
+    params: dict[str, str] | None = None
     ) -> None:
     """
     Create SIMPSON input file.
@@ -59,13 +59,8 @@ def create_input_file(
         template: the template file based on which the input file is created. 
         input: the path of the created input file.
         output: the path of theoutput file to be created by simulation.
-    exp_params: dictionary
-        Container for experimental parameters.
-    b: float
-        Dipolar coupling constant. 
-    angle_set: array_like
-        Euler angles as an array: [alpha1, beta1, gamma1, alpha2, beta2, gamma2].
-
+    params: dictionary
+        Container for simulation parameters.
     Returns
     ------
     None
@@ -81,25 +76,17 @@ def create_input_file(
     with open(filenames['template']) as f:
         content = f.read()
 
-    # Replace parameters
+    params = dict() if params is None else params
+    params['output_file'] = filenames['output']
+        
     for key, value in params.items():
         if value is not None:
             content = content.replace(f"VALUE_{key.upper()}", str(value))
-    
-    # Replace angles
-    for i in range(6):
-        content = content.replace(f"VALUE_ANGLE{i+1}", str(angle_set[i]))
-
-    # Replace other optional parameters
-    if b is not None:
-        content = content.replace("VALUE_B", str(b))
-
-    content = content.replace("OUTPUT_FILE", filenames['output'])
 
     with open(filenames['input'], "w") as f:
         f.write(content)
 
-
+@dataclass
 class Simulator:
     """
     Simulator class to run SIMPSON simulations.
@@ -115,93 +102,27 @@ class Simulator:
         Path to the SIMPSON executable.
     angle_set: list
         Euler angles as a list: [alpha1, beta1, gamma1, alpha2, beta2, gamma2].
-    exp_params: dict
+    params: dict
         Experimental parameters for the simulation.
     b: float
         Dipolar coupling constant.
     """
-    def __init__(
-        self, 
-        simpson_path: str
-        ) -> None:
+    simpson_path: str
+    params: dict[str, str] = field(init=False)
 
-        self.simpson_path = simpson_path
-        self.angle_set = [0]*6
-
-
-    def create_input_file(
-        self, 
-        filenames: dict[str, str] | None = None,
-        exp_params: dict[str, str | int | float] | None = None, 
-        b: float | None = None, 
-        angle_set: list[float] | None = None, 
-        **kwargs: dict[str, str | int | float]
-        ) -> None:
-        """
-        Create SIMPSON input file.
-
-        Parameters
-        -----
-        filenames: dictionary
-            Container for filenames, must have keys: 'template', 'input', 'output'.
-            template: the template file based on which the input file is created. 
-            input: the path of the created input file.
-            output: the path of theoutput file to be created by simulation.
-        exp_params: dictionary
-            Container for experimental parameters.
-        b: float
-            Dipolar coupling constant. 
-        angle_set: array_like
-            Euler angles as an array: [alpha1, beta1, gamma1, alpha2, beta2, gamma2].
-
-        Returns
-        ------
-        None
-        """
-
-        if filenames is not None:
-            self.filenames = filenames
-        elif not hasattr(self, 'filenames'):
-            raise ValueError("Filenames not provided.")
-
-        with open(self.filenames['template']) as f:
-            content = f.read()
-
-        # set experimental parameters
-        if exp_params is not None:
-            for key, value in exp_params.items():
-                self.exp_params[key] = value
-        for key, value in self.exp_params.items():
-            if value is not None:
-                content = content.replace(f"VALUE_{key.upper()}", str(value))
-
-        # set CS Euler angles
-        if angle_set is not None:
-            self.angle_set = angle_set
+    def __post_init__(self):
+        self.params = dict()
         for i in range(6):
-            content = content.replace(f"VALUE_ANGLE{i+1}", str(self.angle_set[i]))
-
-        # set b_eff value
-        if b is not None:
-            self.b = b
-        content = content.replace("VALUE_BEFF", str(self.b))
-
-        for key, value in kwargs.items():
-            content = content.replace(f"VALUE_{key.upper()}", str(value))
-
-        # set output file name
-        content = content.replace("VALUE_OUTPUT_FILE", self.filenames['output'])
-
-        with open(self.filenames['input'], "w") as f:
-            f.write(content)
+            self.params[f"angle{i+1}"] = '0'
 
 
     def simulate(
         self, 
         filenames: dict[str, str] | None = None, 
-        exp_params: dict[str, str | int | float] | None = None, 
         b: float | None = None, 
-        angle_set: list[float] | None = None
+        spin_rate: float | None = None,
+        angle_set: list[float] | None = None, 
+        **kwargs: dict[str, str]
         ) -> float:
         """
         Run SIMPSON simulation with the given input file.
@@ -221,17 +142,24 @@ class Simulator:
         elif not hasattr(self, 'filenames'):
             raise ValueError("Filenames not provided.")
         
-        if exp_params is not None:
-            self.exp_params = exp_params
-        
         if b is not None:
             self.b = b
+            self.params['beff'] = str(b)
         
+        if spin_rate is not None:
+            self.spin_rate = spin_rate
+            self.params['mas'] = str(spin_rate*1000)
+
         if angle_set is not None:
             self.angle_set = angle_set
+            for i in range(6):
+                self.params[f"angle{i+1}"] = str(angle_set[i])
+        
+        for key, value in kwargs.items():
+            self.params[key] = str(value)
 
         tic = time.time()
-        self.create_input_file()
+        create_input_file(self.filenames, self.params) 
         subprocess.run([self.simpson_path, self.filenames['input']], check=True)
         toc = time.time()
         elapsed_time = toc - tic
@@ -239,6 +167,7 @@ class Simulator:
         return elapsed_time
     
 
+@dataclass
 class Optimizer(Simulator):
     """
     Optimizer class to optimize parameters in SIMPSON simulations.
@@ -246,25 +175,22 @@ class Optimizer(Simulator):
     Inherits from Simulator class and provides methods for parameter optimization.
     Currently optimizes the b (dipolar coupling) parameter.
     """
-    
-    def __init__(
-        self, 
-        simpson_path: str, 
-        exp_type: str = 'CTDrenar'
-        ) -> None:
+    exp_type: str = 'CTDrenar'
 
-        super().__init__(simpson_path)
+    def __post_init__(self):
         self.param_name = 'beff'
         self.residual_function = compute_rmsd
 
         # Default data extractor using CTDrenar
-        if exp_type.lower() in ['ctdrenar', 'ct_drenar', 'ct-drenar']:
+        if self.exp_type.lower() in ['ctdrenar', 'ct_drenar', 'ct-drenar']:
             self.data_extractor = lambda filepath: CTDrenar(filepath).difference
+        elif self.exp_type.lower() in ['redor', 'reapdor']:
+            self.data_extractor = lambda filepath: Redor(filepath).difference
         else:
-            raise ValueError(f"Unsupported experiment type: {exp_type}")
+            raise ValueError(f"Unsupported experiment type: {self.exp_type}")
     
     
-    def objective(
+    def _objective(
         self, 
         param: float
         ) -> float:
@@ -288,7 +214,7 @@ class Optimizer(Simulator):
             raise ValueError("Data extractor not provided.")
         
         # Run simulation with the given parameter value
-        self.create_input_file(**{self.param_name: param})
+        create_input_file(self.filenames, self.params)
         subprocess.run([self.simpson_path, self.filenames['input']], check=True)
         
         # Calculate residual using the data extractor
@@ -310,12 +236,12 @@ class Optimizer(Simulator):
 
     def optimize(
         self, 
-        param_name: str = None, 
-        residual_function: callable = None, 
+        param_name: str, 
+        residual_function: Callable | None = None, 
         bounds: tuple = (-1500, 0), 
         method: str = 'bounded', 
         options: dict = {'xatol': 1}
-        ) -> list[float, float, float]:
+        ) -> tuple[float, float, float]:
         """
         Optimize the specified parameter.
         
@@ -344,22 +270,22 @@ class Optimizer(Simulator):
         if not hasattr(self, 'filenames'):
             raise ValueError("Filenames not provided.")
         
-        if param_name is not None:
-            self.param_name = param_name
+        self.param_name = param_name
 
         if residual_function is not None:
             self.residual_function = residual_function
         else:
             warnings.warn("No residual function provided, using default function (rmsd).")
+            self.residual_function = compute_rmsd
 
         print(f"\n=== Optimizing===")
         tic = time.time()
-        optimization_result = minimize_scalar(
-            self.objective,
+        optimization_result: OptimizeResult = minimize_scalar(
+            self._objective,
             bounds=bounds,
             method=method,
             options=options
-        )
+        )   # type: ignore
         toc = time.time()
         elapsed_time = toc - tic  # in seconds
         
@@ -369,8 +295,4 @@ class Optimizer(Simulator):
         if os.path.exists(self.filenames['output']):
             os.remove(self.filenames['output'])
         
-        return [
-            optimization_result.x,
-            optimization_result.fun,
-            elapsed_time
-        ]
+        return optimization_result.x, optimization_result.fun, elapsed_time
