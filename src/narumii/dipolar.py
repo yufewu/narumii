@@ -15,7 +15,6 @@ import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from scipy.constants import pi, physical_constants
 from functions import ctdrenar, redor_bessel
-import gamma
 
 # packages for type-hint
 from typing import Any, Callable
