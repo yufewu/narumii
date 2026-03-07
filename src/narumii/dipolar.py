@@ -13,8 +13,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from scipy.constants import pi, physical_constants
-from utils import read_fid
-from functions import ctdrenar, redor_bessel
+from .utils import read_fid
+from .functions import ctdrenar, redor_bessel
 
 # packages for type-hint
 from typing import Any, Callable
@@ -421,11 +421,12 @@ class Redor(Fid_pair):
     l0: int | None = None
     l10: int | None = None
     spin_rate: float | None = None
+    n_points: int | None = None
     gamma_I: float | None = None
     gamma_S: float | None = None
     verbose: bool = False
 
-    n_points: int = field(init=False)
+    _n_points: int = field(init=False)
     n_rotor_cycles: np.ndarray = field(init=False)
     time_discrete: np.ndarray = field(init=False)
     time_continuous: np.ndarray = field(init=False)
@@ -439,6 +440,7 @@ class Redor(Fid_pair):
     z_opt: float = field(init=False)
     d_opt: float = field(init=False)
     r_opt: float = field(init=False)
+      
 
     def __post_init__(self):
         """
@@ -454,12 +456,33 @@ class Redor(Fid_pair):
         - gamma_S: float, gyromagnetic ratio of the dephasing nucleus in MHz/T (default: None, must be provided for calculating distance from coupling constant)
         - verbose: bool, whether to print detailed information during initialization (default: False)
         """
-        super().__init__(self.filename)
-        if self.n_points is None:
-            self.n_points = np.shape(self.data)[1]          
+        if PurePath(self.filename).suffix == '.txt':
+            self.data = np.loadtxt(self.filename)
+            if self.data.shape[0] % 2 == 1:
+                raise ValueError("Data length is odd, cannot be reshaped into pairs.")
+            self.data = np.reshape(self.data, (2, -1))
+
+            if self.n_points is None:
+                self._n_points = np.shape(self.data)[1]
+            else:
+                self._n_points = self.n_points
+
+            self.dephasing = self.data[0,0:self._n_points]
+            self.reference = self.data[1,0:self._n_points]
             
-        self.dephasing = self.data[0,:]
-        self.reference = self.data[1,:]
+        elif PurePath(self.filename).suffix == '.fid':
+            self.data, _ = read_fid(self.filename)
+            if self.n_points is None:
+                self._n_points = np.shape(self.data)[0] - 1        
+            else:
+                self._n_points = self.n_points
+            
+            self.dephasing = self.data[1:self._n_points+1]
+            self.reference = np.ones(self._n_points) * self.data[0]
+
+        else:
+            raise TypeError("File must be .txt or .fid! ")
+
         if np.any(self.reference == 0):
             raise ValueError("Reference contains zero(s), cannot divide.")
         self.difference = 1 - self.dephasing/self.reference
@@ -473,10 +496,10 @@ class Redor(Fid_pair):
             self.n_rotor_cycles, self.time_discrete, self.time_continuous = set_times(self.l0, 
                                                                                       self.l10, 
                                                                                       self.spin_rate, 
-                                                                                      self.n_points, 
+                                                                                      self._n_points, 
                                                                                       self._rotor_cycle_initial, 
                                                                                       self._rotor_cycle_increment)
-            print(f"\n{self.n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
+            print(f"\n{self._n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
 
 
     def _rotor_cycle_initial(self, 
@@ -535,10 +558,10 @@ class Redor(Fid_pair):
                 self.n_rotor_cycles, self.time_discrete, self.time_continuous = set_times(self.l0, 
                                                                                         self.l10, 
                                                                                         self.spin_rate, 
-                                                                                        self.n_points, 
+                                                                                        self._n_points, 
                                                                                         self._rotor_cycle_initial, 
                                                                                         self._rotor_cycle_increment)
-                print(f"\n{self.n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
+                print(f"\n{self._n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
             else:
                 raise AttributeError("Time axis does not exist. Please specify l0, l10, and n_points.")
 
@@ -655,21 +678,36 @@ class Redor3(Redor):
         """
         if PurePath(self.filename).suffix == '.txt':
             self.data = np.loadtxt(self.filename)
+            if self.data.shape[0] % 3 == 1:
+                raise ValueError("Data length is not divisible by 3, cannot be reshaped into triplets.")
+            self.data = np.reshape(self.data, (3, -1))
+
+            if self.n_points is None:
+                self._n_points = np.shape(self.data)[1]
+            else:
+                self._n_points = self.n_points
+
+            self.dephasing = self.data[0,0:self._n_points]
+            self.compensation = self.data[1,0:self._n_points]
+            self.reference = self.data[2,0:self._n_points]
+
         elif PurePath(self.filename).suffix == '.fid':
             self.data, _ = read_fid(self.filename)
-        else:
-            raise TypeError("File must be .txt or .fid! ")
-        if self.data.shape[0] % 3 == 1:
-            raise ValueError("Data length is not divisible by 3, cannot be reshaped into triplets.")
-        self.data = np.reshape(self.data, (3, -1))
-        if self.n_points is None:
-            self.n_points = np.shape(self.data)[1]          
+            if self.n_points is None:
+                self._n_points = np.shape(self.data)[0] - 1        
+            else:
+                self._n_points = self.n_points
             
-        self.dephasing = self.data[0,:]
-        self.compensation = self.data[1,:]
-        self.reference = self.data[2,:]
+            self.dephasing = self.data[1:self._n_points+1]
+            self.compensation = np.ones(self._n_points) * self.data[0]
+            self.reference = self.compensation
+
+        else:
+            raise TypeError("File must be .txt or .fid! ")      
+            
         if np.any(self.reference == 0):
             raise ValueError("Reference contains zero(s), cannot divide.")
+        
         self.difference = 1 + self.alpha - self.dephasing/self.reference - self.alpha*self.compensation/self.reference
 
         print("\nList of data: ") if self.verbose else ""
@@ -681,7 +719,7 @@ class Redor3(Redor):
             self.n_rotor_cycles, self.time_discrete, self.time_continuous = set_times(self.l0, 
                                                                                       self.l10, 
                                                                                       self.spin_rate, 
-                                                                                      self.n_points, 
+                                                                                      self._n_points, 
                                                                                       self._rotor_cycle_initial, 
                                                                                       self._rotor_cycle_increment)
-            print(f"\n{self.n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
+            print(f"\n{self._n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""

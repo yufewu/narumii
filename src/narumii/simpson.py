@@ -5,8 +5,8 @@ import subprocess
 import warnings
 from dataclasses import dataclass, field
 from scipy.optimize import minimize_scalar
-from narumii.dipolar import CTDrenar, Redor
-from narumii.functions import compute_rmsd
+from .dipolar import CTDrenar, Redor, Redor3
+from .functions import compute_rmsd
 
 # packages for type-hint
 from typing import Any, Callable
@@ -108,10 +108,9 @@ class Simulator:
         Dipolar coupling constant.
     """
     simpson_path: str
-    params: dict[str, str] = field(init=False)
+    params: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self):
-        self.params = dict()
         for i in range(6):
             self.params[f"angle{i+1}"] = '0'
 
@@ -177,15 +176,20 @@ class Optimizer(Simulator):
     """
     exp_type: str = 'CTDrenar'
 
+    param_name: str = field(init=False)
+    residual_function: Callable = field(init=False)
+
     def __post_init__(self):
-        self.param_name = 'beff'
-        self.residual_function = compute_rmsd
+        for i in range(6):
+            self.params[f"angle{i+1}"] = '0'
 
         # Default data extractor using CTDrenar
         if self.exp_type.lower() in ['ctdrenar', 'ct_drenar', 'ct-drenar']:
             self.data_extractor = lambda filepath: CTDrenar(filepath).difference
         elif self.exp_type.lower() in ['redor', 'reapdor']:
             self.data_extractor = lambda filepath: Redor(filepath).difference
+        elif self.exp_type.lower() in ['redor3']:
+            self.data_extractor = lambda filepath: Redor3(filepath).difference
         else:
             raise ValueError(f"Unsupported experiment type: {self.exp_type}")
     
@@ -214,6 +218,7 @@ class Optimizer(Simulator):
             raise ValueError("Data extractor not provided.")
         
         # Run simulation with the given parameter value
+        self.params[self.param_name] = str(param)
         create_input_file(self.filenames, self.params)
         subprocess.run([self.simpson_path, self.filenames['input']], check=True)
         
@@ -237,7 +242,7 @@ class Optimizer(Simulator):
     def optimize(
         self, 
         param_name: str, 
-        residual_function: Callable | None = None, 
+        residual_function: Callable = residual_function, 
         bounds: tuple = (-1500, 0), 
         method: str = 'bounded', 
         options: dict = {'xatol': 1}
@@ -270,6 +275,8 @@ class Optimizer(Simulator):
         if not hasattr(self, 'filenames'):
             raise ValueError("Filenames not provided.")
         
+        if param_name.lower() == 'b':
+            param_name = 'beff'
         self.param_name = param_name
 
         if residual_function is not None:

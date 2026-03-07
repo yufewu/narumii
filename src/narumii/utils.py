@@ -6,6 +6,19 @@ from typing import TextIO
 def read_fid(
         filename: str
         ) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Reads a .fid file and extracts the real and imaginary parts of the data.
+    
+    Parameters
+    - filename: str
+        The path to the .fid file to be read.
+
+    Returns
+    - data_real: np.ndarray
+        The real part of the data extracted from the .fid file.
+    - data_imag: np.ndarray
+        The imaginary part of the data extracted from the .fid file.
+    """
     
     with open(filename, 'r') as f:
         data = []
@@ -39,6 +52,21 @@ def read_results(
         filename: str, 
         skiprows: int = 1
         ) -> np.ndarray:
+    """
+    Reads a results file and returns the data as a numpy array.
+
+    Parameters
+    ----------
+    filename : str
+        The path to the results file to be read.
+    skiprows : int, optional
+        The number of rows to skip at the beginning of the file (default is 1).
+
+    Returns
+    -------
+    np.ndarray
+        The data read from the results file.
+    """
     
     results = np.loadtxt(filename, delimiter=",", skiprows=skiprows)
     results = results.transpose()
