@@ -5,7 +5,7 @@ import subprocess
 import warnings
 from dataclasses import dataclass, field
 from scipy.optimize import minimize_scalar
-from .dipolar import CTDrenar, Redor, Redor3
+from .dipolar import CTDrenar, Redor, Redor3, DoubleQuantum
 from .functions import compute_rmsd
 
 # packages for type-hint
@@ -16,7 +16,7 @@ from scipy.optimize import OptimizeResult
 def create_filenames(
         basename: str, 
         template: str | None = None,
-        **kwargs: dict[str, str]
+        **kwargs: str, 
     ) -> dict[str, str]:
     """
     Create filenames used for simulations based on a given basename. 
@@ -33,12 +33,13 @@ def create_filenames(
     filenames: dictionary
         Container for filenames, with keys: 'template', 'input', 'output', 'log', etc..
     """
-    filenames = {}
-    filenames['input'] = basename + '.in'
-    filenames['output'] = basename + '.fid'
-    filenames['log'] = basename + '.log'
-
-    filenames['template'] = basename + '.template' if template is None else template
+    filenames = {
+        'input': basename + '.in', 
+        'output': basename + '.fid', 
+        'log': basename + '.log', 
+        'txt': basename + '.txt',
+        'template': basename + '.template' if template is None else template, 
+    }
 
     for key, value in kwargs.items():
         filenames[key] = value
@@ -147,7 +148,7 @@ class Simulator:
         
         if spin_rate is not None:
             self.spin_rate = spin_rate
-            self.params['mas'] = str(spin_rate*1000)
+            self.params['spin_rate'] = str(spin_rate)
 
         if angle_set is not None:
             self.angle_set = angle_set
@@ -190,6 +191,8 @@ class Optimizer(Simulator):
             self.data_extractor = lambda filepath: Redor(filepath).difference
         elif self.exp_type.lower() in ['redor3']:
             self.data_extractor = lambda filepath: Redor3(filepath).difference
+        elif self.exp_type.lower() in ['dq', 'doublequantum', 'double-quantum', 'double_quantum']:
+            self.data_extractor = lambda filepath: DoubleQuantum(filepath).difference
         else:
             raise ValueError(f"Unsupported experiment type: {self.exp_type}")
     

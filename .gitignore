@@ -2,6 +2,7 @@
 ###################
 *.txt
 test/
+.vscode
 
 # Compiled source #
 ###################

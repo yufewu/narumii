@@ -13,6 +13,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from scipy.constants import pi, physical_constants
+from dataclasses import dataclass
 from .utils import read_fid
 from .functions import ctdrenar, redor_bessel
 
@@ -72,6 +73,7 @@ def set_times(
     time_continuous = np.linspace(0, time_discrete[-1], num=100)
 
     return n_rotor_cycles, time_discrete, time_continuous
+
 
 class Fid_single:
     """
@@ -178,6 +180,7 @@ class Fid_pair(Fid_single):
         if self.data.shape[0] % 2 == 1:
             raise ValueError("Data length is odd, cannot be reshaped into pairs.")
         self.data = np.reshape(self.data, (2, -1))
+        self.difference = 1 - self.data[0]/self.data[1]
 
 
 class Fid_triple(Fid_single):
@@ -709,6 +712,84 @@ class Redor3(Redor):
             raise ValueError("Reference contains zero(s), cannot divide.")
         
         self.difference = 1 + self.alpha - self.dephasing/self.reference - self.alpha*self.compensation/self.reference
+
+        print("\nList of data: ") if self.verbose else ""
+        print(self.data) if self.verbose else ""
+        print("\nList of differences: ") if self.verbose else ""
+        print(self.difference) if self.verbose else ""
+        
+        if isinstance(self.l0, Number) and isinstance(self.l10, Number) and isinstance(self.spin_rate, Number):
+            self.n_rotor_cycles, self.time_discrete, self.time_continuous = set_times(self.l0, 
+                                                                                      self.l10, 
+                                                                                      self.spin_rate, 
+                                                                                      self._n_points, 
+                                                                                      self._rotor_cycle_initial, 
+                                                                                      self._rotor_cycle_increment)
+            print(f"\n{self._n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
+
+
+@dataclass
+class DoubleQuantum(Redor): 
+    simulate_reference: bool = True
+
+    def __post_init__(self):
+        """
+        Initialization: read data from .txt or .fid file and process the data to generate difference array and the time axis for each point. 
+        The time axis is calculated based on l0, l10, and spin rate if they are provided.
+
+        Parameters:
+        - filename: str, input file path
+        - l0: int, rotor cycles for the first point (default: None, must be provided for calculating dephasing time)
+        - l10: int, increment constant defined in the pulse program (default: None, must be provided for calculating dephasing time)
+        - spin_rate: float, spinning rate in kHz (default: None, must be provided for calculating dephasing time)
+        - gamma_I: float, gyromagnetic ratio of the observed nucleus in MHz/T (default: None, must be provided for calculating distance from coupling constant)
+        - gamma_S: float, gyromagnetic ratio of the dephasing nucleus in MHz/T (default: None, must be provided for calculating distance from coupling constant)
+        - verbose: bool, whether to print detailed information during initialization (default: False)
+        """
+        if PurePath(self.filename).suffix == '.txt':
+            self.data = np.loadtxt(self.filename)
+            if self.data.shape[0] % 2 == 1:
+                raise ValueError("Data length is odd, cannot be reshaped into pairs.")
+            self.data = np.reshape(self.data, (2, -1))
+
+            if self.n_points is None:
+                self._n_points = np.shape(self.data)[1]
+            else:
+                self._n_points = self.n_points
+
+            self.dephasing = self.data[0,0:self._n_points]
+            self.reference = self.data[1,0:self._n_points]
+            
+        elif PurePath(self.filename).suffix == '.fid':
+            if self.simulate_reference:
+                self.data, _ = read_fid(self.filename)
+                if self.data.shape[0] % 2 == 1:
+                    raise ValueError("Data length is odd, cannot be reshaped into pairs.")
+                self.data = np.reshape(self.data, (2, -1))
+
+                if self.n_points is None:
+                    self._n_points = np.shape(self.data)[1]
+                else:
+                    self._n_points = self.n_points
+
+                self.dephasing = self.data[0,0:self._n_points]
+                self.reference = self.data[1,0:self._n_points]
+            else:
+                self.data, _ = read_fid(self.filename)
+                if self.n_points is None:
+                    self._n_points = np.shape(self.data)[0] - 1        
+                else:
+                    self._n_points = self.n_points
+                
+                self.dephasing = self.data[1:self._n_points+1]
+                self.reference = np.ones(self._n_points) * self.data[0]
+
+        else:
+            raise TypeError("File must be .txt or .fid! ")
+
+        if np.any(self.reference == 0):
+            raise ValueError("Reference contains zero(s), cannot divide.")
+        self.difference = 1 - self.dephasing/self.reference
 
         print("\nList of data: ") if self.verbose else ""
         print(self.data) if self.verbose else ""
