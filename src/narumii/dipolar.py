@@ -18,13 +18,13 @@ from .utils import read_fid
 from .functions import ctdrenar, redor_bessel
 
 # packages for type-hint
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 from numbers import Number
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
 
 
-def set_phases(
+def _set_phases(
         phase_range: tuple[float, float] | None, 
         phase_increment: float | None, 
         n_points: int
@@ -55,38 +55,105 @@ def set_phases(
     return phase_range, phase_increment
 
 
-def set_times(
-        l0: int, 
-        l10: int, 
-        spin_rate: float, 
+def _set_x_axis(
+        initial_value: float,
+        loop_counter_start: int, 
+        loop_counter_increment: int, 
+        length_per_counter: float, 
         n_points: int, 
-        rotor_cycles_beginning: Callable,
-        rotor_cycles_increment: Callable, 
+        num_continuous: int = 100
         ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     
     """
-    n_rotor_cycles = np.linspace(rotor_cycles_beginning(l0), 
-                                 rotor_cycles_increment(l10) * (n_points - 1) + rotor_cycles_beginning(l0), 
+    loop_counters = np.linspace(loop_counter_start, 
+                                 loop_counter_increment * (n_points - 1) + loop_counter_start, 
                                  num=n_points)
-    time_discrete = 1/spin_rate * n_rotor_cycles  # in ms if spin_rate in kHz
-    time_continuous = np.linspace(0, time_discrete[-1], num=100)
+    x_discrete = loop_counters * length_per_counter + initial_value
+    x_continuous = np.linspace(x_discrete[0], x_discrete[-1], num=num_continuous)
 
-    return n_rotor_cycles, time_discrete, time_continuous
+    return x_discrete, x_continuous, loop_counters
 
 
+def _calculate_difference(modulated: np.ndarray, reference: np.ndarray) -> np.ndarray:
+    if np.any(reference == 0):
+        raise ValueError("Reference contains zero(s), cannot divide.")
+    return 1 - modulated / reference
+
+
+def _to_fid(filename: str, 
+           data: np.ndarray, 
+           key: str = 'data',
+           ) -> None:
+    """
+    Export data to a .fid file.
+
+    Parameters:
+    - filename: str, output file path
+    - data: np.ndarray, data to be exported
+    - key: str, attribute name of the data to be exported (default: 'data')
+
+    Returns: 
+    - None
+    """
+    
+    with open(filename, 'w') as f:
+        f.write('SIMP\n')
+        f.write(f'NP={np.shape(data)[0]}\n')
+        f.write('SW=100000\n')
+        f.write('TYPE=FID\n')
+        f.write('DATA\n')
+        for value in data:
+            f.write(f'{value} 0\n')
+        f.write('END\n')
+
+
+def _to_txt(filename: str, 
+            data: np.ndarray, 
+            order: Literal['C', 'F'] = 'C', 
+            fmt: str ='%.6f', 
+            ) -> None:
+    """
+    Export data to a .txt file.
+
+    Parameters:
+    - filename: str, output file path
+    - data: np.ndarray, data to be exported
+    - order: str, order of reshaping the data, 'C' for row-major, 'F' for column-major (default: 'C')
+    - fmt: str, formatting for float values
+
+    Returns:
+    - None
+    """
+    data = data.reshape((-1, ), order=order)
+    np.savetxt(filename, data, fmt=fmt)
+
+@dataclass
 class Fid_single:
     """
     Template calss for 1D intensity data with single-FID acquisition, such as CT-DRENAR. 
-
-    Attributes:
-    - filename: str, input file path
-    - data: np.ndarray, raw data read from the file
     """
-    def __init__(self, 
-                 filename: str, 
-                 **kwargs, 
-                 ) -> None:
+    filename: str
+
+    data: np.ndarray = field(init=False)
+    modulated: np.ndarray = field(init=False)
+    difference: np.ndarray = field(init=False)
+    reference: np.ndarray = field(init=False)
+
+    x_initial_value: float = 0
+    loop_counter_start: int | None = None
+    loop_counter_increment: int | None = None
+    length_per_counter: float | None = None
+    n_points: int | None = None
+    num_continuous: int = 100
+
+    reference_idx: int | None = None
+    x_discrete: np.ndarray = field(init=False)
+    x_continuous: np.ndarray = field(init=False)
+
+    load_text_options: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
         """
         Initialization: read data from .txt or .fid file. 
 
@@ -94,81 +161,107 @@ class Fid_single:
         - filename: str, input file path
         - **kwargs: additional keyword arguments for np.loadtxt() when reading .txt file, see https://numpy.org/doc/2.1/reference/generated/numpy.loadtxt.html
         """
-        self.filename = filename
-        if PurePath(filename).suffix == '.txt':
-            self.data = np.loadtxt(filename, **kwargs)
-        elif PurePath(filename).suffix == '.fid':
-            self.data, _ = read_fid(filename)
+        if PurePath(self.filename).suffix == '.txt':
+            self.data = np.loadtxt(self.filename, **self.load_text_options)
+        elif PurePath(self.filename).suffix == '.fid':
+            self.data, _ = read_fid(self.filename)
         else:
             raise TypeError("File must be .txt or .fid! ")
+        
+        if isinstance(self.loop_counter_start, Number) and isinstance(self.loop_counter_increment, Number) and isinstance(self.length_per_counter, Number) and isinstance(self.n_points, int):
+            self.set_x_axis(self.x_initial_value, 
+                            self.loop_counter_start, 
+                            self.loop_counter_increment, 
+                            self.length_per_counter, 
+                            self.n_points, 
+                            self.num_continuous)
+        
+        if isinstance(self.reference_idx, int):
+            if self.reference_idx < 0 or self.reference_idx >= len(self.data):
+                raise ValueError("Reference index is out of bounds.")
+            self.calculate_difference(self.reference_idx)
+
+
+    def set_x_axis(self, 
+                x_initial_value: float,
+                loop_counter_start: int, 
+                loop_counter_increment: int, 
+                length_per_counter: float, 
+                n_points: int, 
+                num_continuous: int,
+                ) -> tuple[np.ndarray, np.ndarray]:
+            self.x_initial_value = x_initial_value
+            self.loop_counter_start = loop_counter_start
+            self.loop_counter_increment = loop_counter_increment
+            self.length_per_counter = length_per_counter
+            self.n_points = n_points
+            self.num_continuous = num_continuous
+
+            self.x_discrete, self.x_continuous, _ = _set_x_axis(x_initial_value, 
+                                                                loop_counter_start, 
+                                                                loop_counter_increment, 
+                                                                length_per_counter, 
+                                                                n_points, 
+                                                                num_continuous)
+            return self.x_discrete, self.x_continuous
+
+
+    def calculate_difference(self, reference_idx: int) -> np.ndarray:
+        self.reference_idx = reference_idx
+
+        if self.reference_idx < 0 or self.reference_idx >= len(self.data):
+            raise ValueError("Reference index is out of bounds.")
+        
+        self.reference = np.ones(len(self.data)) * self.data[self.reference_idx]
+        self.difference = _calculate_difference(self.data, self.reference)
+
+        return self.difference
 
 
     def to_fid(self, 
                filename: str, 
                key: str = 'data',
                ) -> None:
-        """
-        Export data to a .fid file.
-
-        Parameters:
-        - filename: str, output file path
-        - key: str, attribute name of the data to be exported (default: 'data')
-
-        Returns: 
-        - None
-        """
-        
-        if not hasattr(self, key):
-            raise AttributeError("The specified key does not exist.")
-        
-        with open(filename, 'w') as f:
-            f.write('SIMP\n')
-            f.write(f'NP={np.shape(getattr(self, key))[0]}\n')
-            f.write('SW=100000\n')
-            f.write('TYPE=FID\n')
-            f.write('DATA\n')
-            for value in getattr(self, key):
-                f.write(f'{value} 0\n')
-            f.write('END\n')
+      
+        _to_fid(filename, getattr(self, key))
     
 
     def to_txt(self, 
                filename: str, 
                key: str = 'data',
-               order: str = 'C',
+               order: Literal['C', 'F'] = 'C',
                fmt: str ='%.6f', 
                ) -> None:
-        """
-        Export data to a .txt file.
 
-        Parameters:
-        - filename: str, output file path
-        - key: str, attribute name of the data to be exported (default: 'data')
-        - order: str, order of reshaping the data, 'C' for row-major, 'F' for column-major (default: 'C')
-        - fmt: str, formatting for float values
-
-        Returns:
-        - None
-        """
-        if not hasattr(self, key):
-            raise AttributeError("The specified key does not exist.")
-
-        data = getattr(self, key).reshape(-1, order=order)
-        np.savetxt(filename, data, fmt=fmt)
+        _to_txt(filename, getattr(self, key), order=order, fmt=fmt)
 
 
-class Fid_pair(Fid_single):
+@dataclass
+class Fid_pair:
     """
-    Template calss for 1D intensity data with double-FID acquisition, such as REDOR, VT-DRENAR. 
-
-    Attributes:
-    - filename: str, input file path
-    - data: np.ndarray, raw data read from the file
+    Template calss for 1D intensity data with double-FID acquisition, such as REDOR, VT-DRENAR, DQ build-up. 
     """
-    def __init__(self, 
-                 filename: str, 
-                 **kwargs, 
-                 ) -> None:
+    filename: str
+
+    data: np.ndarray = field(init=False)
+    modulated: np.ndarray = field(init=False)
+    difference: np.ndarray = field(init=False)
+    reference: np.ndarray = field(init=False)
+
+    x_initial_value: float = 0
+    loop_counter_start: int | None = None
+    loop_counter_increment: int | None = None
+    length_per_counter: float | None = None
+    n_points: int = field(init=False)
+    num_continuous: int = 100
+
+    x_discrete: np.ndarray = field(init=False)
+    x_continuous: np.ndarray = field(init=False)
+    loop_counters: np.ndarray = field(init=False)
+
+    load_text_options: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
         """
         Initialization: read data from .txt or .fid file. 
 
@@ -176,25 +269,104 @@ class Fid_pair(Fid_single):
         - filename: str, input file path
         - **kwargs: additional keyword arguments for np.loadtxt() when reading .txt file, see https://numpy.org/doc/2.1/reference/generated/numpy.loadtxt.html
         """
-        super().__init__(filename, **kwargs)
+        if PurePath(self.filename).suffix == '.txt':
+            self.data = np.loadtxt(self.filename, **self.load_text_options)
+        elif PurePath(self.filename).suffix == '.fid':
+            self.data, _ = read_fid(self.filename)
+        else:
+            raise TypeError("File must be .txt or .fid! ")
+        
         if self.data.shape[0] % 2 == 1:
             raise ValueError("Data length is odd, cannot be reshaped into pairs.")
         self.data = np.reshape(self.data, (2, -1))
-        self.difference = 1 - self.data[0]/self.data[1]
+        self.n_points = self.data.shape[1]
+        self.modulated = self.data[0]
+        self.reference = self.data[1]
+        self.calculate_difference(self.modulated, self.reference)
+    
+
+    def set_x_axis(self, 
+            initial_value: float,
+            loop_counter_start: int, 
+            loop_counter_increment: int, 
+            length_per_counter: float, 
+            n_points: int, 
+            num_continuous: int,
+            ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        self.x_initial_value = initial_value
+        self.loop_counter_start = loop_counter_start
+        self.loop_counter_increment = loop_counter_increment
+        self.length_per_counter = length_per_counter
+        self.n_points = n_points
+        self.num_continuous = num_continuous
+
+        self.x_discrete, self.x_continuous, self.loop_counters = _set_x_axis(initial_value, 
+                                                            loop_counter_start, 
+                                                            loop_counter_increment, 
+                                                            length_per_counter, 
+                                                            n_points, 
+                                                            num_continuous)
+        
+        return self.x_discrete, self.x_continuous, self.loop_counters
 
 
-class Fid_triple(Fid_single):
+    def calculate_difference(self, 
+                             modulated: np.ndarray,
+                             reference: np.ndarray, 
+                             ) -> np.ndarray:     
+        self.modulated = modulated
+        self.reference = reference 
+        self.difference = _calculate_difference(modulated, reference)
+
+        return self.difference
+
+    
+    def to_fid(self, 
+               filename: str, 
+               key: str = 'data',
+               ) -> None:
+      
+        _to_fid(filename, getattr(self, key))
+    
+
+    def to_txt(self, 
+               filename: str, 
+               key: str = 'data',
+               order: Literal['C', 'F'] = 'C',
+               fmt: str ='%.6f', 
+               ) -> None:
+
+        _to_txt(filename, getattr(self, key), order=order, fmt=fmt)
+
+
+@dataclass
+class Fid_triple:
     """
     Template calss for 1D intensity data with triple-FID acquisition, such as compensated REDOR. 
-
-    Attributes:
-    - filename: str, input file path
-    - data: np.ndarray, raw data read from the file
     """
-    def __init__(self, 
-                 filename: str, 
-                 **kwargs, 
-                 ) -> None:
+    filename: str
+    alpha: float = 1
+
+    data: np.ndarray = field(init=False)
+    modulated: np.ndarray = field(init=False)
+    compensated: np.ndarray = field(init=False)
+    difference: np.ndarray = field(init=False)
+    reference: np.ndarray = field(init=False)
+
+    x_initial_value: float = 0
+    loop_counter_start: int | None = None
+    loop_counter_increment: int | None = None
+    length_per_counter: float | None = None
+    n_points: int | None = None
+    num_continuous: int = 100
+
+    x_discrete: np.ndarray = field(init=False)
+    x_continuous: np.ndarray = field(init=False)
+    loop_counters: np.ndarray = field(init=False)
+
+    load_text_options: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
         """
         Initialization: read data from .txt or .fid file. 
 
@@ -202,13 +374,92 @@ class Fid_triple(Fid_single):
         - filename: str, input file path
         - **kwargs: additional keyword arguments for np.loadtxt() when reading .txt file, see https://numpy.org/doc/2.1/reference/generated/numpy.loadtxt.html
         """
-        super().__init__(filename, **kwargs)
-        if self.data.shape[0] % 3 != 0:
+        if PurePath(self.filename).suffix == '.txt':
+            self.data = np.loadtxt(self.filename, **self.load_text_options)
+        elif PurePath(self.filename).suffix == '.fid':
+            self.data, _ = read_fid(self.filename)
+        else:
+            raise TypeError("File must be .txt or .fid! ")
+        
+        if self.data.shape[0] % 3 == 1:
             raise ValueError("Data length is not divisible by 3, cannot be reshaped into triples.")
         self.data = np.reshape(self.data, (3, -1))
+        self.modulated = self.data[0]
+        self.compensated = self.data[1]
+        self.reference = self.data[2]
+
+        self.calculate_difference(self.modulated, self.compensated, self.reference)
 
 
+    def set_x_axis(self, 
+            initial_value: float,
+            loop_counter_start: int, 
+            loop_counter_increment: int, 
+            length_per_counter: float, 
+            n_points: int, 
+            num_continuous: int,
+            ) -> None:
+        
+        self.x_initial_value = initial_value
+        self.loop_counter_start = loop_counter_start
+        self.loop_counter_increment = loop_counter_increment
+        self.length_per_counter = length_per_counter
+        self.n_points = n_points
+        self.num_continuous = num_continuous
+
+        self.x_discrete, self.x_continuous, self.loop_counters = _set_x_axis(initial_value, 
+                                                            loop_counter_start, 
+                                                            loop_counter_increment, 
+                                                            length_per_counter, 
+                                                            n_points, 
+                                                            num_continuous)
+
+
+    def calculate_difference(self, 
+                             modulated: np.ndarray,
+                             compensated: np.ndarray,
+                             reference: np.ndarray, 
+                             ) -> None:     
+        
+        self.modulated = modulated
+        self.compensated = compensated
+        self.reference = reference 
+
+        self.difference_not_compensated = _calculate_difference(modulated, reference)
+        self.difference = self.difference_not_compensated + self.alpha * _calculate_difference(compensated, reference)
+
+    
+    def to_fid(self, 
+               filename: str, 
+               key: str = 'data',
+               ) -> None:
+
+        _to_fid(filename, getattr(self, key))
+    
+
+    def to_txt(self, 
+               filename: str, 
+               key: str = 'data',
+               order: Literal['C', 'F'] = 'C',
+               fmt: str ='%.6f', 
+               ) -> None:
+
+        _to_txt(filename, getattr(self, key), order=order, fmt=fmt)
+
+
+@dataclass
 class CTDrenar(Fid_single):
+    l0: int | None = None
+    spin_rate: float | None = None
+
+    phase_range: tuple[float, float] | None = None
+    phase_increment: float | None = None
+    phase_continuous: np.ndarray = field(init=False)
+    phase_discrete: np.ndarray = field(init=False)
+
+    dephasing: np.ndarray = field(init=False)
+    dephasing_time: float | None = None
+    verbose: bool = False
     """
     A class for handling CT-DRENAR data, which is a single-FID acquisition experiment with phase incrementation.
 
@@ -232,17 +483,7 @@ class CTDrenar(Fid_single):
     - dephasing_time: float, dephasing time calculated from l0 and spin rate (if provided)
     """
 
-    def __init__(self, 
-                 filename: str, 
-                 phase_range: tuple[float, float] | None = None,
-                 phase_increment: float | None = None, 
-                 n_points: int | None = None,
-                 idx_reference: int | None = None,
-                 l0: int | None = None,
-                 spin_rate: float | None = None,
-                 verbose=False, 
-                 **kwargs: Any, 
-                 ) -> None:
+    def __post_init__(self) -> None:
         """
         Initialization: read data from .txt or .fid file and process the data to generate difference (normalized DQ intensity) array and the phase angles for each point.
         
@@ -257,35 +498,33 @@ class CTDrenar(Fid_single):
         - verbose: bool, whether to print detailed information during initialization (default: False)
         - **kwargs: additional keyword arguments for np.loadtxt() when reading .txt file, see https://numpy.org/doc/2.1/reference/generated/numpy.loadtxt.html
         """
-        self.phase_range = phase_range
-        self.verbose = verbose
+        super().__post_init__()
 
-        super().__init__(filename, **kwargs)
-        self.n_points = n_points if n_points is not None else np.shape(self.data)[0]
-        self.phase_range, self.phase_increment = set_phases(phase_range, phase_increment, self.n_points)
-
-        if idx_reference is not None:
-            self.idx_reference = idx_reference
-        elif self.n_points %2 == 0:
-                warnings.warn("Even number of points, the reference point cannot be found.")
+        if self.n_points is not None and self.n_points != np.shape(self.data)[0]:
+            raise ValueError("Inconsistent number of points between input and data.")
         else:
-            self.idx_reference = self.n_points // 2   # python index, starting from 0
-        
+            self.n_points = np.shape(self.data)[0]
+
+        if self.reference_idx is None:
+            if self.n_points % 2 == 0:
+                warnings.warn("Even number of points, the reference point cannot be found.")
+            else:
+                self.reference_idx = self.n_points // 2   # python index, starting from 0
+                self.calculate_difference(self.reference_idx)
+
+        self.phase_range, self.phase_increment = _set_phases(self.phase_range, self.phase_increment, self.n_points)
         self.phase_discrete = np.linspace(self.phase_range[0], self.phase_range[1], num=self.n_points)
         self.phase_continuous = np.linspace(self.phase_range[0], self.phase_range[1], num=100)
-        
-        self.dephasing = self.data
-        self.reference = np.ones(self.n_points) * self.data[self.idx_reference]
-        if np.any(self.reference == 0):
-            raise ValueError("Reference contains zero(s), cannot divide.")
-        self.difference = 1 - self.dephasing/self.reference
 
-        self.l0 = l0
-        self.spin_rate = spin_rate
+        self.phase_discrete, self.phase_continuous = self.set_x_axis(self.phase_range[0], 
+                                                                     0, 
+                                                                     1, 
+                                                                     self.phase_increment, 
+                                                                     self.n_points, 
+                                                                     self.num_continuous)
+
         if isinstance(self.l0, Number) and isinstance(self.spin_rate, Number): 
             self.dephasing_time = 16 * self.l0 / self.spin_rate
-        else:
-            self.dephasing_time: float | None = None
 
 
     def plot_difference(self, 
@@ -410,26 +649,16 @@ class CTDrenar(Fid_single):
 class Redor(Fid_pair):
     """
     A class for handling REDOR data, which is a double-FID acquisition experiment with time incrementation. 
-
-    Attributes:
-    - filename: str, input file path
-    - l0: int, rotor cycles for the first point (default: None, must be provided for calculating dephasing time)
-    - l10: int, increment constant defined in the pulse program (default: None, must be provided for calculating dephasing time)
-    - spin_rate: float, spinning rate in kHz (default: None, must be provided for calculating dephasing time)
-    - gamma_I: float, gyromagnetic ratio of the observed nucleus in MHz/T (default: None, must be provided for calculating distance from coupling constant)
-    - gamma_S: float, gyromagnetic ratio of the dephasing nucleus in MHz/T (default: None, must be provided for calculating distance from coupling constant)
-    - verbose: bool, whether to print detailed information during initialization (default: False)
     """
-    filename: str
     l0: int | None = None
     l10: int | None = None
     spin_rate: float | None = None
-    n_points: int | None = None
+
     gamma_I: float | None = None
     gamma_S: float | None = None
-    verbose: bool = False
 
     _n_points: int = field(init=False)
+    truncated_n_points: int = field(init=False)
     n_rotor_cycles: np.ndarray = field(init=False)
     time_discrete: np.ndarray = field(init=False)
     time_continuous: np.ndarray = field(init=False)
@@ -443,6 +672,8 @@ class Redor(Fid_pair):
     z_opt: float = field(init=False)
     d_opt: float = field(init=False)
     r_opt: float = field(init=False)
+
+    verbose: bool = False
       
 
     def __post_init__(self):
@@ -459,6 +690,7 @@ class Redor(Fid_pair):
         - gamma_S: float, gyromagnetic ratio of the dephasing nucleus in MHz/T (default: None, must be provided for calculating distance from coupling constant)
         - verbose: bool, whether to print detailed information during initialization (default: False)
         """
+
         if PurePath(self.filename).suffix == '.txt':
             self.data = np.loadtxt(self.filename)
             if self.data.shape[0] % 2 == 1:
@@ -486,6 +718,10 @@ class Redor(Fid_pair):
         else:
             raise TypeError("File must be .txt or .fid! ")
 
+        # deprecated: switch defination of attributes
+        self.truncated_n_points = self._n_points
+        self.n_points = self._n_points
+
         if np.any(self.reference == 0):
             raise ValueError("Reference contains zero(s), cannot divide.")
         self.difference = 1 - self.dephasing/self.reference
@@ -496,43 +732,14 @@ class Redor(Fid_pair):
         print(self.difference) if self.verbose else ""
         
         if isinstance(self.l0, Number) and isinstance(self.l10, Number) and isinstance(self.spin_rate, Number):
-            self.n_rotor_cycles, self.time_discrete, self.time_continuous = set_times(self.l0, 
-                                                                                      self.l10, 
-                                                                                      self.spin_rate, 
-                                                                                      self._n_points, 
-                                                                                      self._rotor_cycle_initial, 
-                                                                                      self._rotor_cycle_increment)
-            print(f"\n{self._n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
-
-
-    def _rotor_cycle_initial(self, 
-                             l0: int
-                             ) -> int:
-        """
-        Private method: calculate the number of rotor cycles for the first point based on l0, defined by how the pulse program is written. 
-
-        Parameters:
-        - l0: int, defined in the pulse program
-
-        Returns:
-        - int, rotor cycles for the first point
-        """
-        return l0 + 1
-
-
-    def _rotor_cycle_increment(self,
-                               l10: int
-                               ) -> int:
-        """
-        Private method: calculate the increment of rotor cycles for each point based on l10, defined by how the pulse program is written. Here each l10 corresponds to 2 rotor cycles. 
-        
-        Parameters:
-        - l10: int, increment constant defined in the pulse program
-
-        Returns:
-        - int, increment of rotor cycles
-        """
-        return 2 * l10
+            self.time_discrete, self.time_continuous, self.loop_counters = self.set_x_axis(0, 
+                            self.l0 + 1, 
+                            self.l10 * 2, 
+                            1/self.spin_rate, 
+                            self.n_points, 
+                            self.num_continuous)
+            print(f"\n{self.n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
+            # For different pulse sequences, the time axis can also be defined by calling the .set_x_axis() method using more general loop counter settings. 
     
 
     def plot_difference(self, 
@@ -558,12 +765,12 @@ class Redor(Fid_pair):
         """
         if self.time_discrete is None:
             if isinstance(self.l0, Number) and isinstance(self.l10, Number) and isinstance(self.spin_rate, Number):
-                self.n_rotor_cycles, self.time_discrete, self.time_continuous = set_times(self.l0, 
-                                                                                        self.l10, 
-                                                                                        self.spin_rate, 
-                                                                                        self._n_points, 
-                                                                                        self._rotor_cycle_initial, 
-                                                                                        self._rotor_cycle_increment)
+                self.set_x_axis(0, 
+                                self.l0 + 1, 
+                                self.l10 * 2, 
+                                1/self.spin_rate, 
+                                self._n_points, 
+                                self.num_continuous)
                 print(f"\n{self._n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
             else:
                 raise AttributeError("Time axis does not exist. Please specify l0, l10, and n_points.")
@@ -656,13 +863,34 @@ class Redor(Fid_pair):
 
 
 @dataclass
-class Redor3(Redor): 
+class Redor3(Fid_triple): 
     """
     Class for handling compensated REDOR data, see https://doi.org/10.1006/jmre.2000.2191
     """
-    alpha: float = 1
-    
-    compensation: np.ndarray = field(init=False)
+    l0: int | None = None
+    l10: int | None = None
+    spin_rate: float | None = None
+
+    gamma_I: float | None = None
+    gamma_S: float | None = None
+
+    _n_points: int = field(init=False)
+    truncated_n_points: int = field(init=False)
+    n_rotor_cycles: np.ndarray = field(init=False)
+    time_discrete: np.ndarray = field(init=False)
+    time_continuous: np.ndarray = field(init=False)
+
+    dephasing: np.ndarray = field(init=False)
+    reference: np.ndarray = field(init=False)
+    difference: np.ndarray = field(init=False)
+
+    popt: np.ndarray = field(init=False)
+    pconv: np.ndarray = field(init=False)
+    z_opt: float = field(init=False)
+    d_opt: float = field(init=False)
+    r_opt: float = field(init=False)
+
+    verbose: bool = False
 
     def __post_init__(self):
         """
@@ -719,18 +947,23 @@ class Redor3(Redor):
         print(self.difference) if self.verbose else ""
         
         if isinstance(self.l0, Number) and isinstance(self.l10, Number) and isinstance(self.spin_rate, Number):
-            self.n_rotor_cycles, self.time_discrete, self.time_continuous = set_times(self.l0, 
-                                                                                      self.l10, 
-                                                                                      self.spin_rate, 
-                                                                                      self._n_points, 
-                                                                                      self._rotor_cycle_initial, 
-                                                                                      self._rotor_cycle_increment)
+            self.set_x_axis(0, 
+                            self.l0 + 1, 
+                            self.l10 * 2, 
+                            1/self.spin_rate, 
+                            self._n_points, 
+                            self.num_continuous)
             print(f"\n{self._n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
+            # For different pulse sequences, the time axis can also be defined by calling the .set_x_axis() method using more general loop counter settings. 
 
 
 @dataclass
-class DoubleQuantum(Redor): 
-    simulate_reference: bool = True
+class DoubleQuantum(Fid_pair): 
+    l0: int | None = None
+    l10: int | None = None
+    spin_rate: float | None = None
+
+    verbose: bool = False
 
     def __post_init__(self):
         """
@@ -746,50 +979,7 @@ class DoubleQuantum(Redor):
         - gamma_S: float, gyromagnetic ratio of the dephasing nucleus in MHz/T (default: None, must be provided for calculating distance from coupling constant)
         - verbose: bool, whether to print detailed information during initialization (default: False)
         """
-        if PurePath(self.filename).suffix == '.txt':
-            self.data = np.loadtxt(self.filename)
-            if self.data.shape[0] % 2 == 1:
-                raise ValueError("Data length is odd, cannot be reshaped into pairs.")
-            self.data = np.reshape(self.data, (2, -1))
-
-            if self.n_points is None:
-                self._n_points = np.shape(self.data)[1]
-            else:
-                self._n_points = self.n_points
-
-            self.dephasing = self.data[0,0:self._n_points]
-            self.reference = self.data[1,0:self._n_points]
-            
-        elif PurePath(self.filename).suffix == '.fid':
-            if self.simulate_reference:
-                self.data, _ = read_fid(self.filename)
-                if self.data.shape[0] % 2 == 1:
-                    raise ValueError("Data length is odd, cannot be reshaped into pairs.")
-                self.data = np.reshape(self.data, (2, -1))
-
-                if self.n_points is None:
-                    self._n_points = np.shape(self.data)[1]
-                else:
-                    self._n_points = self.n_points
-
-                self.dephasing = self.data[0,0:self._n_points]
-                self.reference = self.data[1,0:self._n_points]
-            else:
-                self.data, _ = read_fid(self.filename)
-                if self.n_points is None:
-                    self._n_points = np.shape(self.data)[0] - 1        
-                else:
-                    self._n_points = self.n_points
-                
-                self.dephasing = self.data[1:self._n_points+1]
-                self.reference = np.ones(self._n_points) * self.data[0]
-
-        else:
-            raise TypeError("File must be .txt or .fid! ")
-
-        if np.any(self.reference == 0):
-            raise ValueError("Reference contains zero(s), cannot divide.")
-        self.difference = 1 - self.dephasing/self.reference
+        super().__post_init__()
 
         print("\nList of data: ") if self.verbose else ""
         print(self.data) if self.verbose else ""
@@ -797,10 +987,11 @@ class DoubleQuantum(Redor):
         print(self.difference) if self.verbose else ""
         
         if isinstance(self.l0, Number) and isinstance(self.l10, Number) and isinstance(self.spin_rate, Number):
-            self.n_rotor_cycles, self.time_discrete, self.time_continuous = set_times(self.l0, 
-                                                                                      self.l10, 
-                                                                                      self.spin_rate, 
-                                                                                      self._n_points, 
-                                                                                      self._rotor_cycle_initial, 
-                                                                                      self._rotor_cycle_increment)
-            print(f"\n{self._n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
+            self.time_discrete, self.time_continuous, self.loop_counters = self.set_x_axis(0, 
+                            self.l0, 
+                            self.l10, 
+                            self.spin_rate, 
+                            self.n_points, 
+                            self.num_continuous,
+                            )
+            print(f"\n{self.n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
