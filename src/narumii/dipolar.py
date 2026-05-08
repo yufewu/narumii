@@ -657,8 +657,7 @@ class Redor(Fid_pair):
     gamma_I: float | None = None
     gamma_S: float | None = None
 
-    _n_points: int = field(init=False)
-    truncated_n_points: int = field(init=False)
+    truncated_n_points: int | None = None
     n_rotor_cycles: np.ndarray = field(init=False)
     time_discrete: np.ndarray = field(init=False)
     time_continuous: np.ndarray = field(init=False)
@@ -697,30 +696,29 @@ class Redor(Fid_pair):
                 raise ValueError("Data length is odd, cannot be reshaped into pairs.")
             self.data = np.reshape(self.data, (2, -1))
 
-            if self.n_points is None:
-                self._n_points = np.shape(self.data)[1]
+            if self.truncated_n_points is None:
+                self.n_points = np.shape(self.data)[1]
             else:
-                self._n_points = self.n_points
+                self.n_points = self.truncated_n_points
 
-            self.dephasing = self.data[0,0:self._n_points]
-            self.reference = self.data[1,0:self._n_points]
+            self.dephasing = self.data[0,0:self.n_points]
+            self.reference = self.data[1,0:self.n_points]
             
         elif PurePath(self.filename).suffix == '.fid':
             self.data, _ = read_fid(self.filename)
-            if self.n_points is None:
-                self._n_points = np.shape(self.data)[0] - 1        
+            if self.truncated_n_points is None:
+                self.n_points = np.shape(self.data)[0] - 1   
             else:
-                self._n_points = self.n_points
+                self.n_points = self.truncated_n_points     
             
-            self.dephasing = self.data[1:self._n_points+1]
-            self.reference = np.ones(self._n_points) * self.data[0]
+            self.dephasing = self.data[1:self.n_points+1]
+            self.reference = np.ones(self.n_points) * self.data[0]
 
         else:
             raise TypeError("File must be .txt or .fid! ")
 
         # deprecated: switch defination of attributes
-        self.truncated_n_points = self._n_points
-        self.n_points = self._n_points
+        self.truncated_n_points = self.n_points
 
         if np.any(self.reference == 0):
             raise ValueError("Reference contains zero(s), cannot divide.")
@@ -769,9 +767,9 @@ class Redor(Fid_pair):
                                 self.l0 + 1, 
                                 self.l10 * 2, 
                                 1/self.spin_rate, 
-                                self._n_points, 
+                                self.n_points, 
                                 self.num_continuous)
-                print(f"\n{self._n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
+                print(f"\n{self.n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
             else:
                 raise AttributeError("Time axis does not exist. Please specify l0, l10, and n_points.")
 
