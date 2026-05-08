@@ -3,7 +3,7 @@ Useful python classes and functions for handling dipolar NMR experiments.
 
 Author(s): Yufei Wu, Julius Schlueter
 Created on: 2025/08/08
-Last modified: 2026/03/05
+Last modified: 2026/05/08
 """
 
 from pathlib import PurePath
