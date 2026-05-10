@@ -1,0 +1,41 @@
+site_name: "NARUMII Docs"
+
+theme:
+  name: material
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: numpy
+            docstring_section_style: table
+            show_root_heading: true
+            merge_init_into_class: true
+            members_order: source
+            show_source: false
+            show_root_members_full_path: false
+            show_signature_annotations: false
+            separate_signature: true
+            show_bases: true
+            signature_crossrefs: true
+
+extra_css:
+  - stylesheets/extra.css
+
+markdown_extensions:
+  - pymdownx.arithmatex:
+      generic: true
+
+extra_javascript:
+  - https://polyfill.io/v3/polyfill.min.js?features=es6
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js   
+
+nav:
+  - Index: index.md
+  - narumii.dipolar: dipolar.md
+  - narumii.simpson: simpson.md
+  - narumii.functions: functions.md
+  - narumii.utils: utils.md
