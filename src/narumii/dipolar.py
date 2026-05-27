@@ -952,7 +952,7 @@ class CTDrenar(Fid_single):
 
     References
     ----------
-    Ren, J. & Eckert, H. (2000). Measurement of homonuclear magnetic dipole-dipole interactions 
+    Ren, J. & Eckert, H. (2015). Measurement of homonuclear magnetic dipole-dipole interactions 
     in multiple 1/2-spin systems using constant-time DQ-DRENAR NMR. Journal of Magnetic Resonance, 260(1), 46-53.
     https://doi.org/10.1016/j.jmr.2015.08.022
 
@@ -1877,9 +1877,7 @@ class DoubleQuantum(Fid_pair):
     l10: int, optional
         Increment constant defined in the pulse program. Default None.
     spin_rate: float, optional
-        Spinning rate in kHz. Default None.
-    num_continuous: int, optional
-        Number of points for continuous x-axis. Default 100.
+        Spinning rate in kHz. Default None.     
     verbose: bool, optional
         Whether to print detailed information during initialization. Default False.
     load_text_options: dict, optional
@@ -1895,8 +1893,6 @@ class DoubleQuantum(Fid_pair):
         See Parameters.
     spin_rate: float
         See Parameters.
-    num_continuous: int
-        See Parameters.
     verbose: bool
         See Parameters.
     load_text_options: dict
@@ -1904,14 +1900,16 @@ class DoubleQuantum(Fid_pair):
 
     data: np.ndarray
         Raw data read from the file, reshaped to (2, n_points) array.
+    n_points: int
+        Number of data points.
     modulated: np.ndarray
         Modulated DQ signal (first FID), 1D array.
     reference: np.ndarray
         Reference signal (second FID), 1D array.
     difference: np.ndarray
         Normalized DQ build-up (1 - S/S₀), 1D array.
-    n_points: int
-        Number of data points.
+    num_continuous: int
+        Number of points for continuous x-axis. Default 100.
     time_discrete: np.ndarray
         Discrete time values corresponding to data points, in ms, 1D array. Only present if l0, l10, and spin_rate are provided.
     time_continuous: np.ndarray

@@ -7,17 +7,19 @@ def read_fid(
         filename: str
         ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Reads a .fid file and extracts the real and imaginary parts of the data.
+    Reads a SIMPSON fid file and extracts the real and imaginary parts of the data.
     
     Parameters
-    - filename: str
-        The path to the .fid file to be read.
+    ----------
+    filename: str
+        The path to the fid file to be read.
 
     Returns
-    - data_real: np.ndarray
-        The real part of the data extracted from the .fid file.
-    - data_imag: np.ndarray
-        The imaginary part of the data extracted from the .fid file.
+    -------
+    data_real: np.ndarray
+        The real part of the data extracted from the fid file.
+    data_imag: np.ndarray
+        The imaginary part of the data extracted from the fid file.
     """
     
     with open(filename, 'r') as f:
@@ -60,11 +62,11 @@ def read_results(
     filename : str
         The path to the results file to be read.
     skiprows : int, optional
-        The number of rows to skip at the beginning of the file (default is 1).
+        The number of rows to skip at the beginning of the file. Default is 1.
 
     Returns
     -------
-    np.ndarray
+    results: np.ndarray
         The data read from the results file.
     """
     
@@ -75,14 +77,25 @@ def read_results(
 
 
 class Tee:
-    '''
+    """
     Redirects output to multiple file-like objects.
 
     Parameters
     ----------
     *files: file-like objects
         The file-like objects to which output will be written.
-    '''
+    
+    Methods
+    -------
+    write
+        Write to the outputs.
+    flush
+        Flush the outputs. 
+
+    Examples
+    --------
+    >>> sys.stdout = Tee(sys.stdout, f); print(...); sys.stdout = sys.__stdout__
+    """
     def __init__(
         self, 
         *files: TextIO
