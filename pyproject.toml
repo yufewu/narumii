@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "narumii"
-version = "0.2.1"
+version = "0.2.3"
 authors = [
   { name="Yufei Wu", email="yufei.wu@cec.mpg.de" },
 ]
