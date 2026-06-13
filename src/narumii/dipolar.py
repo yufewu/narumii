@@ -10,7 +10,9 @@ from .utils import read_fid
 from .functions import ctdrenar, redor_bessel
 
 # packages for type-hint
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Sequence
+from pathlib import Path, PurePath
+from numpy.typing import ArrayLike
 from numbers import Number
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
@@ -121,6 +123,115 @@ def _calculate_difference(modulated: np.ndarray, reference: np.ndarray) -> np.nd
     return 1 - modulated / reference
 
 
+def _plot_data(y_data: ArrayLike, x_data: ArrayLike | None = None, 
+                    **kwargs: Any
+                    ) -> tuple[Figure, Axes]:
+        """
+        Plot the relative difference (1 - S'/S₀) against the phase angle.
+
+        Parameters
+        ----------
+        y_data: ArrayLike
+            Data to be plotted. 
+        x_data: ArrayLike, optional
+            Axis on which the data will be plotted. If not provided, the x-axis will be number of points. 
+        **kwargs: optional
+            Additional keyword arguments for plt.plot()
+
+        Returns
+        -------
+        fig: Figure
+            The created figure object
+        ax: Axes
+            The created axes object
+        """
+        figure_size = kwargs.pop('figure_size', (4, 4))
+        show_legend = kwargs.pop('show_legend', False)
+        show = kwargs.pop('show', True)
+
+        ax_kwargs = {}
+        if 'xlim' in kwargs: ax_kwargs['xlim'] = kwargs.pop('xlim')
+        if 'ylim' in kwargs: ax_kwargs['ylim'] = kwargs.pop('ylim')
+        ax_kwargs['xlabel'] = kwargs.pop('x_label', 'Data points')
+        ax_kwargs['ylabel'] = kwargs.pop('y_label', 'Normalized difference')
+
+        y_arr = np.asarray(y_data)
+
+        if x_data is None: 
+            x_arr = np.arange(1, y_arr.shape[0])
+        else:
+            x_arr = np.asarray(x_data)
+
+        fig, ax = plt.subplots(figsize=figure_size, constrained_layout=True)
+        ax.plot(x_arr, y_arr, **kwargs)
+
+        ax.set(**ax_kwargs)
+        if show_legend or 'label' in kwargs:
+            ax.legend()
+
+        if show:
+            plt.show()
+
+        return fig, ax
+
+
+def _plot_fit(y_data: ArrayLike, x_data: ArrayLike, 
+              y_predict: ArrayLike, x_continuous: ArrayLike, 
+                    **kwargs: Any
+                ) -> tuple[Figure, Axes]:
+        """
+        Plot the fitted curve together with the experimental data.
+
+        Parameters
+        ----------
+        xlim: tuple[float, float], optional
+            Limits for x-axis. Default is None.
+        ylim: tuple[float, float], optional
+            Limits for y-axis. Default is None.
+        figure_size: tuple[float, float], optional
+            Size of the figure (width, height). Default is (4, 4).
+        color: str, optional
+            Color for both experimental data and fitted curve. Default is '#0092c8'.
+        show_legend: bool, optional
+            Whether to show legend. Default is False.
+
+        Returns
+        -------
+        fig: Figure
+            The created figure object
+        ax: Axes
+            The created axes object
+
+        Examples
+        --------
+        >>> fig, ax = exp.plot_fit(show_legend=True)
+        >>> fig, ax = exp.plot_fit(xlim=(0, 10), ylim=(0, 0.3), color='red')
+        """
+        figure_size = kwargs.pop('figure_size', (4, 4))
+        show_legend = kwargs.pop('show_legend', False)
+        show = kwargs.pop('show', True)
+        color = kwargs.pop('color', '#0092C8')
+
+        ax_kwargs = {}
+        if 'xlim' in kwargs: ax_kwargs['xlim'] = kwargs.pop('xlim')
+        if 'ylim' in kwargs: ax_kwargs['ylim'] = kwargs.pop('ylim')
+        ax_kwargs['xlabel'] = kwargs.pop('x_label', 'Unknown x-axis')
+        ax_kwargs['ylabel'] = kwargs.pop('y_label', 'Normalized difference')
+
+        fig, ax = plt.subplots(figsize=figure_size, constrained_layout=True)
+        ax.plot(x_data, y_data, marker='o', linestyle='none', color=color, label='experiment', **kwargs)
+        ax.plot(x_continuous, y_predict, marker='none', linestyle='-', color=color, label='fit', **kwargs)
+
+        ax.set(**ax_kwargs)
+        if show_legend or 'label' in kwargs:
+            ax.legend()
+
+        if show:
+            plt.show()
+
+        return fig, ax
+
+
 def _to_fid(filename: str, 
            data: np.ndarray, 
            ) -> None:
@@ -183,7 +294,7 @@ class Fid_single:
 
     Parameters
     ----------
-    filename: str
+    filename: str | Path | ArrayLike
         Input data file.
     reference_idx: int, optional
         Index representing the position of the reference point in the data array. Default None.
@@ -192,7 +303,7 @@ class Fid_single:
 
     Attributes
     ----------
-    filename: str
+    filename: str | Path | ArrayLike
         See Parameters. 
     reference_idx: int
         See Parameters. 
@@ -246,7 +357,7 @@ class Fid_single:
     >>> print(fid.difference)
     >>> fid.to_txt("output.txt")
     """
-    filename: str
+    filename: str | Path | ArrayLike
     reference_idx: int | None = None
 
     data: np.ndarray = field(init=False)
@@ -268,12 +379,18 @@ class Fid_single:
 
     def __post_init__(self) -> None:
 
-        if PurePath(self.filename).suffix == '.txt':
-            self.data = np.loadtxt(self.filename, **self.load_text_options)
-        elif PurePath(self.filename).suffix == '.fid':
-            self.data, _ = read_fid(self.filename)
+        if isinstance(self.filename, (str, Path)):
+            suffix = PurePath(self.filename).suffix
+            if suffix == '.txt':
+                self.data = np.loadtxt(self.filename, **self.load_text_options)
+            elif suffix == '.fid':
+                self.data, _ = read_fid(str(self.filename))
+            else:
+                raise TypeError("File must be .txt or .fid! ")
         else:
-            raise TypeError("File must be .txt or .fid! ")
+            self.data = np.asarray(self.filename)
+            if self.data.ndim != 1:
+                raise ValueError("Input data array must be 1-dimensional.")
         
         self.n_points = len(self.data)
         self.modulated = self.data
@@ -368,6 +485,57 @@ class Fid_single:
         return self.difference
 
 
+    def plot_difference(self, 
+                        **kwargs: Any
+                        ) -> tuple[Figure, Axes]:
+        """
+        Plot the relative difference (1 - S'/S₀) against the phase angle.
+
+        Parameters
+        ----------
+        **kwargs: optional
+            Additional keyword arguments for plt.plot()
+
+        Returns
+        -------
+        fig: Figure
+            The created figure object
+        ax: Axes
+            The created axes object
+        """
+        if not hasattr(self, 'difference'):
+            raise AttributeError("Data does not exist. Read result file again with CTDrenar(filename).")
+
+        return _plot_data(self.difference, self.x_discrete, **kwargs)
+    
+
+    def fit(self, 
+            function: Callable = ctdrenar, 
+            **kwargs
+            ) -> None:
+        """
+        Fit CT-DRENAR data with the analytical function and calculate the effective dipolar coupling constant.
+
+        Parameters
+        ----------
+        function: Callable, optional
+            The function to fit the data (default: ctdrenar)
+
+        Returns
+        -------
+        beff_opt: float
+            Effective dipolar coupling constant calculated from the optimized z-value, in kHz, if the dephasing time is provided. 
+        z_opt: float
+            Optimized z-value from the fitting, in ms^2, if dephasing time is not provided. 
+        """
+        bounds = kwargs.pop("bounds", (0, np.inf))
+        sigma = kwargs.pop("sigma", None)
+
+        self.popt, self.pconv = curve_fit(function, self.x_discrete, self.difference, bounds=bounds, sigma=sigma, **kwargs)
+        #perr = np.sqrt(np.diag(pconv))  # standard deviation
+        self.predict = function(self.x_continuous, *self.popt)
+
+
     def to_fid(self, 
                filename: str, 
                key: Literal['data', 'modulated', 'reference', 'difference'] = 'data',
@@ -439,10 +607,19 @@ class Fid_pair:
 
     Parameters
     ----------
-    filename: str
-        Input data file. 
+    filename: str | Path | ArrayLike
+        Input data file. Could be either a .txt file, .fid file, or a 1D/2D array. For a 1D array, the first point is taken 
+        as the reference. For a 2D array, the second row is taken as the reference. 
+    truncated_n_points: int, optional
+        Truncate the data to first n points. 
     load_text_options: dict, optional
-        Additional keyword arguments for np.loadtxt(). Default {}.
+        Additional keyword arguments for np.loadtxt(). Default is {}.
+    txt_use_first_point_as_reference: bool, optional
+        Determines how the reference data is parsed. Use the first point of the data if True, use the second half of the data if False. 
+        Only used when the input file is .txt. Default is False. 
+    fid_use_first_point_as_reference: bool, optional
+        Determines how the reference data is parsed. Use the first point of the data if True, use the second half of the data if False. 
+        Only used when the input file is .fid. Default is True. 
 
     Attributes
     ----------
@@ -457,8 +634,12 @@ class Fid_pair:
         Number of points in the experiment.
     modulated: np.ndarray
         Modulated signal (S', first FID), 1D array.
+    modulated_untruncated: np.ndarray
+        Modulated signal (S', first FID) without truncation, 1D array.
     reference: np.ndarray
         Reference signal (S₀, second FID), 1D array.
+    reference_untruncated: np.ndarray
+        Reference signal (S₀, second FID) without truncation, 1D array.
     difference: np.ndarray
         Normalized difference (1 - S'/S₀), 1D array.
     
@@ -482,10 +663,10 @@ class Fid_pair:
 
     Methods
     -------
+    apply_truncation
+        Truncate the data to first n points. 
     set_x_axis
         Create the x-axis corresponding to the data array. 
-    calculate_difference
-        Calculate the relative difference between the data array and a reference. 
     to_fid
         Export the data array to an fid file. 
     to_txt
@@ -494,17 +675,26 @@ class Fid_pair:
     Examples
     --------
     >>> fid_pair = Fid_pair("redor_data.txt")
+    >>> fid_pair.apply_truncation(8)
     >>> print(fid_pair.difference)
     >>> fid_pair.set_x_axis(x_initial_value=0, loop_counter_start=1, loop_counter_increment=1, length_per_counter=58.82, n_points=16)
     >>> fid_pair.to_txt("output_difference.txt", key='difference')
     """
-    filename: str
+    filename: str | Path | ArrayLike
+    truncated_n_points: int | None = None
+    txt_use_first_point_as_reference: bool = False
+    fid_use_first_point_as_reference: bool = True
+    rotor_cycles_per_loop: int = 16
 
     data: np.ndarray = field(init=False)
     n_points: int = field(init=False)
+    n_points_total: int = field(init=False)
     modulated: np.ndarray = field(init=False)
+    modulated_untruncated: np.ndarray = field(init=False)
     difference: np.ndarray = field(init=False)
+    difference_untruncated: np.ndarray = field(init=False)
     reference: np.ndarray = field(init=False)
+    reference_untruncated: np.ndarray = field(init=False)
 
     x_initial_value: float = field(init=False, default=0)
     loop_counter_start: int = field(init=False)
@@ -512,37 +702,100 @@ class Fid_pair:
     length_per_counter: float = field(init=False)
     num_continuous: int = field(init=False, default=100)
 
-    x_discrete: np.ndarray = field(init=False)
+    x_discrete: np.ndarray | None = field(init=False, default=None)
     x_continuous: np.ndarray = field(init=False)
     loop_counters: np.ndarray = field(init=False)
 
     load_text_options: dict[str, Any] = field(default_factory=dict)
 
+
     def __post_init__(self) -> None:
-        if PurePath(self.filename).suffix == '.txt':
-            self.data = np.loadtxt(self.filename, **self.load_text_options)
-        elif PurePath(self.filename).suffix == '.fid':
-            self.data, _ = read_fid(self.filename)
-        else:
-            raise TypeError("File must be .txt or .fid! ")
+        """Process data after initialization """
+        self._parse_input_data()
+
+        self.modulated_untruncated = self.modulated
+        self.reference_untruncated = self.reference
         
-        if self.data.shape[0] % 2 == 1:
+        if self.truncated_n_points is not None:
+            self.apply_truncation(self.truncated_n_points)
+
+        self._calculate_difference()
+
+
+    def _parse_input_data(self) -> None: 
+        """Identify the type of input data and assign parser functions. Process the input data to generate self.modulated and 
+        self.reference. """
+
+        if isinstance(self.filename, (str, Path)):
+            suffix = PurePath(self.filename).suffix.lower()
+
+            if suffix == '.txt':
+                self.data = np.loadtxt(self.filename, **self.load_text_options)
+                use_first_point_as_reference: bool = self.txt_use_first_point_as_reference
+
+            elif suffix == '.fid':
+                self.data, _ = read_fid(str(self.filename))
+                use_first_point_as_reference: bool = self.fid_use_first_point_as_reference
+            else:
+                raise TypeError("File must be .txt or .fid! ")
+            
+        else:
+            _input_data = np.asarray(self.filename)
+            if _input_data.ndim == 1:
+                self.data = _input_data
+                use_first_point_as_reference: bool = True
+            elif _input_data.ndim == 2:
+                self.data = _input_data.reshape(-1)
+                use_first_point_as_reference: bool = False
+            else:
+                raise ValueError("Input data array must be 1 or 2-dimensional.")  
+        
+        if use_first_point_as_reference is True:
+            self._parse_as_1D()
+        else:
+            self._parse_as_2D()
+
+
+    def _parse_as_2D(self) -> None:
+        """Parse data as a 2D array, where the second half of the data is reference. """
+        
+        if self.data.shape[0] % 2 != 0:
             raise ValueError("Data length is odd, cannot be reshaped into pairs.")
+        
         self.data = np.reshape(self.data, (2, -1))
+        
         self.n_points = self.data.shape[1]
+        self.n_points_total = self.n_points
         self.modulated = self.data[0]
         self.reference = self.data[1]
-        self.calculate_difference(self.modulated, self.reference)
+
+
+    def _parse_as_1D(self) -> None:
+        """Parse data as a 1D array, use the first point as reference. """
+
+        self.n_points = self.data.shape[0] - 1
+        self.modulated = self.data[1:]
+        self.reference = np.ones_like(self.modulated) * self.data[0]
+        
     
+    def apply_truncation(self, truncated_n_points) -> None:
+        """Truncate the data. """
+        self.modulated = self.modulated_untruncated[:truncated_n_points]
+        self.reference = self.reference_untruncated[:truncated_n_points]
+        self.difference = self.difference_untruncated[:truncated_n_points]
+
+        self.n_points = truncated_n_points
+        self._calculate_difference()
+
 
     def set_x_axis(self, 
             x_initial_value: float,
             loop_counter_start: int, 
             loop_counter_increment: int, 
-            length_per_counter: float, 
-            n_points: int, 
-            num_continuous: int = 100,
-            ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            rotor_cycles_per_loop: int, 
+            spin_rate: float | None = None, 
+            num_continuous: int | None= None,
+            ) -> None:
         """
         Create the x-axis corresponding to the data array. In the form of x_initial_value + length_per_counter*[list of \
             loop counter with defined start value, increment, and number of points]. 
@@ -578,44 +831,115 @@ class Fid_pair:
         self.x_initial_value = x_initial_value
         self.loop_counter_start = loop_counter_start
         self.loop_counter_increment = loop_counter_increment
-        self.length_per_counter = length_per_counter
-        self.n_points = n_points
-        self.num_continuous = num_continuous
+        self.rotor_cycles_per_loop = rotor_cycles_per_loop
+        if num_continuous is not None: 
+            self.num_continuous = num_continuous
 
-        self.x_discrete, self.x_continuous, self.loop_counters = _set_x_axis(x_initial_value, 
-                                                            loop_counter_start, 
-                                                            loop_counter_increment, 
-                                                            length_per_counter, 
-                                                            n_points, 
-                                                            num_continuous)
-        
-        return self.x_discrete, self.x_continuous, self.loop_counters
+        if spin_rate is not None: 
+            self.spin_rate = spin_rate
+        elif not hasattr(self, "spin_rate"):
+            raise AttributeError("Spin rate is not provided. ")
+
+        self.x_discrete, self.x_continuous, self.loop_counters = _set_x_axis(self.x_initial_value, 
+                                                            self.loop_counter_start, 
+                                                            self.loop_counter_increment, 
+                                                            self.rotor_cycles_per_loop / self.spin_rate, 
+                                                            self.n_points, 
+                                                            self.num_continuous)
 
 
-    def calculate_difference(self, 
-                             modulated: np.ndarray,
-                             reference: np.ndarray, 
-                             ) -> np.ndarray: 
+    def _calculate_difference(self) -> None: 
         """
         Calculate the reference and difference array from the data. 
+        """
+        self.difference = _calculate_difference(self.modulated, self.reference)
+
+
+    def plot_difference(self, 
+                        **kwargs: Any
+                        ) -> tuple[Figure, Axes]:
+        """
+        Plot the relative difference (1 - S'/S₀) against the phase angle.
 
         Parameters
         ----------
-        modulated: np.ndarray
-            Modulated signal (S'), 1D array.
-        reference: np.ndarray
-            Reference signal (S₀), 1D array.
+        **kwargs: optional
+            Additional keyword arguments for plt.plot()
 
         Returns
         -------
-        self.difference: np.ndarray
-            Array of the relative differences between the modulated data and reference. 
+        fig: Figure
+            The created figure object
+        ax: Axes
+            The created axes object
         """
-        self.modulated = modulated
-        self.reference = reference 
-        self.difference = _calculate_difference(modulated, reference)
+        if not hasattr(self, 'difference'):
+            raise AttributeError("Data does not exist. Read result file again with CTDrenar(filename).")
 
-        return self.difference
+        return _plot_data(self.difference, self.x_discrete, **kwargs)
+    
+
+    def fit(self, 
+            function: Callable = redor_bessel(5), 
+            **kwargs
+            ) -> None:
+        """
+        Fit CT-DRENAR data with the analytical function and calculate the effective dipolar coupling constant.
+
+        Parameters
+        ----------
+        function: Callable, optional
+            The function to fit the data (default: ctdrenar)
+
+        Returns
+        -------
+        beff_opt: float
+            Effective dipolar coupling constant calculated from the optimized z-value, in kHz, if the dephasing time is provided. 
+        z_opt: float
+            Optimized z-value from the fitting, in ms^2, if dephasing time is not provided. 
+        """
+        bounds = kwargs.pop("bounds", (0, np.inf))
+        sigma = kwargs.pop("sigma", None)
+
+        self.popt, self.pconv = curve_fit(function, self.x_discrete, self.difference, bounds=bounds, sigma=sigma, **kwargs)
+        #perr = np.sqrt(np.diag(pconv))  # standard deviation
+        self.predict = function(self.x_continuous, *self.popt)
+    
+
+    def plot_fit(self, 
+                **kwargs: Any, 
+                ) -> tuple[Figure, Axes]:
+        """
+        Plot the fitted curve together with the experimental data.
+
+        Parameters
+        ----------
+        xlim: tuple[float, float], optional
+            Limits for x-axis. Default is None.
+        ylim: tuple[float, float], optional
+            Limits for y-axis. Default is None.
+        figure_size: tuple[float, float], optional
+            Size of the figure (width, height). Default is (4, 4).
+        color: str, optional
+            Color for both experimental data and fitted curve. Default is '#0092c8'.
+        show_legend: bool, optional
+            Whether to show legend. Default is False.
+
+        Returns
+        -------
+        fig: Figure
+            The created figure object
+        ax: Axes
+            The created axes object
+
+        Examples
+        --------
+        >>> fig, ax = exp.plot_fit(show_legend=True)
+        >>> fig, ax = exp.plot_fit(xlim=(0, 10), ylim=(0, 0.3), color='red')
+        """
+        assert self.x_discrete is not None
+        
+        return _plot_fit(self.difference, self.x_discrete, self.predict, self.x_continuous, **kwargs)
 
     
     def to_fid(self, 
@@ -772,7 +1096,7 @@ class Fid_triple:
     length_per_counter: float = field(init=False)
     num_continuous: int = field(init=False, default=100)
 
-    x_discrete: np.ndarray = field(init=False)
+    x_discrete: np.ndarray | None = field(init=False, default=None)
     x_continuous: np.ndarray = field(init=False)
     loop_counters: np.ndarray = field(init=False)
 
@@ -883,6 +1207,30 @@ class Fid_triple:
 
         return self.difference
 
+
+    def plot_difference(self, 
+                        **kwargs: Any
+                        ) -> tuple[Figure, Axes]:
+        """
+        Plot the relative difference (1 - S'/S₀) against the phase angle.
+
+        Parameters
+        ----------
+        **kwargs: optional
+            Additional keyword arguments for plt.plot()
+
+        Returns
+        -------
+        fig: Figure
+            The created figure object
+        ax: Axes
+            The created axes object
+        """
+        if not hasattr(self, 'difference'):
+            raise AttributeError("Data does not exist. Read result file again with CTDrenar(filename).")
+
+        return _plot_data(self.difference, self.x_discrete, **kwargs)
+    
     
     def to_fid(self, 
                filename: str, 
@@ -967,7 +1315,9 @@ class CTDrenar(Fid_single):
     reference_idx: int, optional
         Index of the reference point in the data. Default is None (and the middle point of the data is taken if n_points is odd).
     l0: int, optional
-        Rotor cycles for the first point. Default is None.
+        Loop counter for the first point. Default is None.
+    rotor_cycles_per_l0: int, optional
+        Number of rotor cycles in the looping block when l0 = 1. Default is 16 (two BaBa-xy16). 
     spin_rate: float, optional
         Spinning rate in kHz. Default is None.
     num_continuous: int, optional
@@ -1048,6 +1398,7 @@ class CTDrenar(Fid_single):
     phase_increment: float | None = None
 
     l0: int | None = None
+    rotor_cycles_per_l0: int = 16
     spin_rate: float | None = None
     num_continuous: int = 100
     verbose: bool = False
@@ -1084,16 +1435,14 @@ class CTDrenar(Fid_single):
                                                                      self.phase_increment, 
                                                                      self.n_points, 
                                                                      self.num_continuous)
+        self.x_discrete = self.phase_discrete
+        self.x_continuous = self.phase_continuous
 
         if isinstance(self.l0, Number) and isinstance(self.spin_rate, Number): 
             self.dephasing_time = 16 * self.l0 / self.spin_rate
 
 
     def plot_difference(self, 
-                        xlim: tuple[float, float] | None = None, 
-                        ylim: tuple[float, float] | None = None, 
-                        figure_size: tuple[float, float] = (4, 4),
-                        show_legend: bool = False, 
                         **kwargs: Any
                         ) -> tuple[Figure, Axes]:
         """
@@ -1101,14 +1450,6 @@ class CTDrenar(Fid_single):
 
         Parameters
         ----------
-        xlim: tuple[float, float], optional
-            Limits for x-axis
-        ylim: tuple[float, float], optional
-            Limits for y-axis
-        figure_size: tuple[float, float], optional
-            Size of the figure (width, height)
-        show_legend: bool, optional
-            Whether to show legend
         **kwargs: optional
             Additional keyword arguments for plt.plot()
 
@@ -1121,27 +1462,17 @@ class CTDrenar(Fid_single):
         """
         if not hasattr(self, 'phase_discrete') or not hasattr(self, 'difference'):
             raise AttributeError("Data does not exist. Read result file again with CTDrenar(filename).")
-
-        fig, ax = plt.subplots(figsize=figure_size, constrained_layout=True)
-        ax.plot(self.phase_discrete, self.difference, **kwargs)
-        ax.set_xlabel('Phase shift (°)')
-        ax.set_ylabel('Normalized DQ intensity')
         
-        if xlim:
-            ax.set_xlim(xlim)
-        if ylim:
-            ax.set_ylim(ylim)
-        if show_legend:
-            ax.legend()
-        
-        plt.show()
+        kwargs.setdefault('x_label', 'Phase shift (°)')
+        kwargs.setdefault('y_label', 'Normalized DQ intensity')
 
-        return fig, ax
+        return super().plot_difference(**kwargs)
 
                 
     def fit(self, 
             function: Callable = ctdrenar, 
-            ) -> float:
+            **kwargs: Any, 
+            ) -> None:
         """
         Fit CT-DRENAR data with the analytical function and calculate the effective dipolar coupling constant.
 
@@ -1161,22 +1492,19 @@ class CTDrenar(Fid_single):
             if isinstance(self.l0, Number) and isinstance(self.spin_rate, Number):
                 self.dephasing_time = 16 * self.l0 / self.spin_rate
             else:
-                warnings.warn("l0 and spin_rate must be provided to calculate dephasing time for fitting. Do so when initializing the class or add them as attributes seperately.")
+                warnings.warn("l0 and spin_rate must be provided to calculate dephasing time for fitting. Do so when initializing the objec or add them as attributes seperately.")
         
-        self.popt, self.pconv = curve_fit(function, self.phase_discrete, self.difference, bounds=(0, np.inf))
-        #perr = np.sqrt(np.diag(pconv))  # standard deviation
-        self.z_opt = self.popt[0]
-        self.predict = function(self.phase_continuous, self.z_opt)
+        super().fit()
 
         if self.dephasing_time is not None:
             self.beff_opt = np.sqrt(self.z_opt)/self.dephasing_time
             print(f'Effective dipolar coupling constant by analytical fitting = {self.beff_opt:.3f} kHz')
             #r_opt = (mu_0 / (4*pi) * (gamma_I*gamma_S*hbar) / (2*pi) / d_opt /1000)**(1/3) * 10**9  # in nm
             #print(f'Effective distance r = {r_opt:.3f} nm')
-            return self.beff_opt
+            #return self.beff_opt
         else:
-            warnings.warn("Dephasing time is not provided, returning only the optimized z-value.")
-            return self.z_opt
+            warnings.warn("Dephasing time is not provided, only the z-value was optimized.")
+            #return self.z_opt
 
 
     def plot_fit(self, 
@@ -1346,13 +1674,6 @@ class Redor(Fid_pair):
     num_continuous: int = 100
     verbose: bool = False
 
-    time_discrete: np.ndarray = field(init=False)
-    time_continuous: np.ndarray = field(init=False)
-
-    dephasing: np.ndarray = field(init=False)
-    reference: np.ndarray = field(init=False)
-    difference: np.ndarray = field(init=False)
-
     popt: np.ndarray = field(init=False)
     pconv: np.ndarray = field(init=False)
     z_opt: float = field(init=False)
@@ -1363,40 +1684,7 @@ class Redor(Fid_pair):
 
     def __post_init__(self):
 
-        if PurePath(self.filename).suffix == '.txt':
-            self.data = np.loadtxt(self.filename)
-            if self.data.shape[0] % 2 == 1:
-                raise ValueError("Data length is odd, cannot be reshaped into pairs.")
-            self.data = np.reshape(self.data, (2, -1))
-
-            if self.truncated_n_points is None:
-                self.n_points = np.shape(self.data)[1]
-            else:
-                self.n_points = self.truncated_n_points
-
-            self.dephasing = self.data[0,0:self.n_points]
-            self.reference = self.data[1,0:self.n_points]
-            
-        elif PurePath(self.filename).suffix == '.fid':  # assert simulated fid using simpson with the first point being the reference. 
-            self.data, _ = read_fid(self.filename)
-            if self.truncated_n_points is None:
-                self.n_points = np.shape(self.data)[0] - 1   
-            else:
-                self.n_points = self.truncated_n_points     
-            
-            # if the following truncation is not correct, you need to use the original contents in the data attribute. 
-            self.dephasing = self.data[1:self.n_points+1]
-            self.reference = np.ones(self.n_points) * self.data[0]
-
-        else:
-            raise TypeError("File must be .txt or .fid! ")
-
-        # deprecated: switch defination of attributes
-        self.truncated_n_points = self.n_points
-
-        if np.any(self.reference == 0):
-            raise ValueError("Reference contains zero(s), cannot divide.")
-        self.difference = 1 - self.dephasing/self.reference
+        super().__post_init__()
 
         print("\nList of data: ") if self.verbose else ""
         print(self.data) if self.verbose else ""
@@ -1406,32 +1694,31 @@ class Redor(Fid_pair):
         if isinstance(self.l0, Number) and isinstance(self.l10, Number) and isinstance(self.spin_rate, Number):
             self.set_time_axis(self.l0, self.l10, self.spin_rate, self.num_continuous)
             # For different pulse sequences, the time axis can also be defined by calling the .set_x_axis() method using more general loop counter settings. 
-    
 
-    # I'm not sure whether to keep these properties yet. 
+    
     @property
-    def x_initial_value(self) -> float:  # type: ignore
-        return 0
+    def dephasing(self) -> np.ndarray: 
+        return self.modulated
 
     @property
-    def loop_counter_start(self) -> int | None:  # type: ignore
-        return self.l0 + 1 if self.l0 is not None else None
+    def dephasing_untruncated(self) -> np.ndarray: 
+        return self.modulated_untruncated
     
     @property
-    def loop_counter_increment(self) -> int | None:  # type: ignore
-        return self.l10 * 2 if self.l10 is not None else None
+    def time_discrete(self) -> np.ndarray | None:
+        return self.x_discrete
     
     @property
-    def length_per_counter(self) -> float | None:  # type: ignore
-        return 1/self.spin_rate if self.spin_rate is not None else None
+    def time_continuous(self) -> np.ndarray:
+        return self.x_continuous
 
 
     def set_time_axis(self, 
         l0: int, 
         l10: int, 
-        spin_rate: float, 
+        spin_rate: float | None = None, 
         num_continuous: int = 100,
-        ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        ) -> None:
         """
         Create the time axis corresponding to the data array. In the form of initial_value + (1/spin_rate)*[list of \
             loop counter with defined start value (l0 + 1), increment (l10 * 2), and number of points].
@@ -1442,19 +1729,14 @@ class Redor(Fid_pair):
             Rotor cycles for the first point.
         l10: int
             Increment constant defined in the pulse program.
-        spin_rate: float
-            Spinning rate in kHz.
+        spin_rate: float, optional
+            Spinning rate in kHz. If not specified, the current attribute self.spin_rate will be used for calculation. Default is None. 
         num_continuous: int, optional
             How many points is generated for an artificial x-axis used for trendlines. Default is 100.
 
         Returns
         -------
-        self.time_discrete: np.ndarray
-            Discrete time values for plotting experimental/simulated data, in ms.
-        self.time_continuous: np.ndarray
-            Artificial time axis with (usually) more points used for trendlines, in ms.
-        self.loop_counters: np.ndarray
-            Loop counter array in case needed.
+        None
 
         Examples
         --------
@@ -1462,26 +1744,19 @@ class Redor(Fid_pair):
         """
         self.l0 = l0
         self.l10 = l10
-        self.spin_rate = spin_rate
-        self.num_continuous = num_continuous
 
-        self.time_discrete, self.time_continuous, self.loop_counters = _set_x_axis(0, 
-                            self.l0 + 1, 
-                            self.l10 * 2, 
-                            1/self.spin_rate, 
-                            self.n_points, 
-                            self.num_continuous)
+        super().set_x_axis(0, 
+                            l0 + 1, 
+                            l10 * 2, 
+                            self.rotor_cycles_per_loop, 
+                            spin_rate, 
+                            num_continuous)
         
-        print(f"\n{self.n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
-        
-        return self.time_discrete, self.time_continuous, self.loop_counters
+        assert self.time_discrete is not None, "Time axis generation failed."
+        print(f"\n{self.n_points :d} steps, time increment {2*l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
 
 
     def plot_difference(self, 
-                        xlim: tuple[float, float] | None = None, 
-                        ylim: tuple[float, float] | None = None, 
-                        figure_size: tuple[float, float] = (4, 4),
-                        show_legend: bool = False, 
                         **kwargs: Any
                         ) -> tuple[Figure, Axes]:
         """
@@ -1517,27 +1792,17 @@ class Redor(Fid_pair):
                 self.set_time_axis(self.l0, self.l10, self.spin_rate, self.num_continuous)
             else:
                 raise AttributeError("Time axis does not exist. Please specify l0, l10, and n_points.")
-
-        fig, ax = plt.subplots(figsize=figure_size, constrained_layout=True)
-        ax.plot(self.time_discrete, self.difference, **kwargs)
-        ax.set_xlabel('Recoupling time (ms)')
-        ax.set_ylabel('1 - S/S₀')
         
-        if xlim:
-            ax.set_xlim(xlim)
-        if ylim:
-            ax.set_ylim(ylim)
-        if show_legend:
-            ax.legend()
-        
-        plt.show()
+        kwargs.setdefault('x_label', 'Recoupling time (ms)')
+        kwargs.setdefault('y_label', '1 - S/S₀')
 
-        return fig, ax
+        return super().plot_difference(**kwargs)
         
 
     def fit(self, 
             function: Callable = redor_bessel(5), 
-            ) -> tuple[float, float | None]:
+            **kwargs, 
+            ) -> None:
         """
         Fit REDOR data with the analytical function and calculate the effective dipolar coupling constant.
 
@@ -1558,30 +1823,19 @@ class Redor(Fid_pair):
         >>> beff, r = exp.fit()
         >>> print(f'Effective coupling: {beff:.3f} kHz, Distance: {r:.3f} Å')
         """
-        self.popt, self.pconv = curve_fit(function, self.time_discrete, self.difference, bounds=(0, np.inf))
-        #perr = np.sqrt(np.diag(pconv))  # standard deviation
+        super().fit(function, **kwargs)
         self.beff_opt = self.popt[0]
-        self.predict = function(self.time_continuous, self.beff_opt)
         print(f'Effective dipolar coupling constant by analytical fitting = {self.beff_opt*1000:.1f} Hz') if self.verbose else ""
 
-        if self.gamma_I is None or self.gamma_S is None:
-
-            return self.beff_opt, None
-        else:
+        if self.gamma_I is not None and self.gamma_S is not None:
             mu_0 = physical_constants['vacuum mag. permeability'][0]
             hbar = physical_constants['reduced Planck constant'][0]
             self.r_opt = (mu_0 / (4*pi) * abs(self.gamma_I*self.gamma_S*hbar) / (2*pi) / self.beff_opt /1000)**(1/3) * 10**10  # in angstrom
             print(f'Effective distance by analytical fitting = {self.r_opt:.3f} Å') if self.verbose else ""
-
-            return self.beff_opt, self.r_opt
         
 
     def plot_fit(self, 
-                xlim: tuple[float, float] | None = None, 
-                ylim: tuple[float, float] | None = None, 
-                figure_size: tuple[float, float] = (4, 4),
-                color = '#0092c8', 
-                show_legend: bool = False, 
+                **kwargs: Any
                 ) -> tuple[Figure, Axes]:
         """
         Plot the fitted curve together with the experimental data.
@@ -1611,22 +1865,10 @@ class Redor(Fid_pair):
         >>> fig, ax = exp.plot_fit(show_legend=True)
         >>> fig, ax = exp.plot_fit(xlim=(0, 10), ylim=(0, 0.3), color='red')
         """
-        fig, ax = plt.subplots(figsize=figure_size, constrained_layout=True)
-        ax.plot(self.time_discrete, self.difference, marker='o', linestyle='none', color=color, label='experiment')
-        ax.plot(self.time_continuous, self.predict, marker='none', linestyle='-', color=color, label='analytical fit')
-        ax.set_xlabel('Recoupling time (ms)')
-        ax.set_ylabel('1 - S/S₀')
-
-        if xlim:
-            ax.set_xlim(xlim)
-        if ylim:
-            ax.set_ylim(ylim)
-        if show_legend:
-            ax.legend()
-
-        plt.show()
+        kwargs.setdefault('x_label', 'Recoupling time (ms)')
+        kwargs.setdefault('y_label', '1 - S/S₀')
         
-        return fig, ax
+        return super().plot_fit()
 
 
 @dataclass
@@ -1816,7 +2058,7 @@ class Redor3(Fid_triple):
         l10: int, 
         spin_rate: float, 
         num_continuous: int = 100,
-        ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        ) -> None:
         """
         Create the time axis corresponding to the data array. In the form of initial_value + (1/spin_rate)*[list of \
             loop counter with defined start value (l0 + 1), increment (l10 * 2), and number of points].
@@ -1858,10 +2100,53 @@ class Redor3(Fid_triple):
                             self.n_points, 
                             self.num_continuous)
         
-        print(f"\n{self.n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
+        self.x_discrete = self.time_discrete
+        self.x_continuous = self.x_continuous
         
-        return self.time_discrete, self.time_continuous, self.loop_counters
+        print(f"\n{self.n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
 
+
+    def plot_difference(self, 
+                        **kwargs: Any
+                        ) -> tuple[Figure, Axes]:
+        """
+        Plot the relative difference (1 - S'/S₀) against the recoupling time.
+
+        Parameters
+        ----------
+        xlim: tuple[float, float], optional
+            Limits for x-axis. Default is None.
+        ylim: tuple[float, float], optional
+            Limits for y-axis. Default is None.
+        figure_size: tuple[float, float], optional
+            Size of the figure (width, height). Default is (4, 4).
+        show_legend: bool, optional
+            Whether to show legend. Default is False.
+        **kwargs: optional
+            Additional keyword arguments for plt.plot()
+
+        Returns
+        -------
+        fig: Figure
+            The created figure object
+        ax: Axes
+            The created axes object
+
+        Examples
+        --------
+        >>> fig, ax = exp.plot_difference()
+        >>> fig, ax = exp.plot_difference(xlim=(0, 10), ylim=(0, 0.3))
+        """
+        if self.time_discrete is None:
+            if isinstance(self.l0, Number) and isinstance(self.l10, Number) and isinstance(self.spin_rate, Number):
+                self.set_time_axis(self.l0, self.l10, self.spin_rate, self.num_continuous)
+            else:
+                raise AttributeError("Time axis does not exist. Please specify l0, l10, and n_points.")
+        
+        kwargs.setdefault('x_label', 'Recoupling time (ms)')
+        kwargs.setdefault('y_label', 'Compensated difference')
+
+        return super().plot_difference(**kwargs)
 
 @dataclass
 class DoubleQuantum(Fid_pair): 
@@ -1877,7 +2162,12 @@ class DoubleQuantum(Fid_pair):
     l10: int, optional
         Increment constant defined in the pulse program. Default None.
     spin_rate: float, optional
-        Spinning rate in kHz. Default None.     
+        Spinning rate in kHz. Default None.
+        
+    truncated_n_points: int, optional
+        Truncated number of points to use. Default None.
+    num_continuous: int, optional
+        Number of points for continuous x-axis. Default 100.
     verbose: bool, optional
         Whether to print detailed information during initialization. Default False.
     load_text_options: dict, optional
@@ -1893,6 +2183,10 @@ class DoubleQuantum(Fid_pair):
         See Parameters.
     spin_rate: float
         See Parameters.
+    truncated_n_points: int
+        See Parameters.
+    num_continuous: int
+        See Parameters.
     verbose: bool
         See Parameters.
     load_text_options: dict
@@ -1901,22 +2195,28 @@ class DoubleQuantum(Fid_pair):
     data: np.ndarray
         Raw data read from the file, reshaped to (2, n_points) array.
     n_points: int
-        Number of data points.
-    modulated: np.ndarray
-        Modulated DQ signal (first FID), 1D array.
+        Number of data points in the experiment.
+    dephasing: np.ndarray
+        Dephasing signal (S'), 1D array.
     reference: np.ndarray
-        Reference signal (second FID), 1D array.
+        Reference signal (S₀), 1D array.
     difference: np.ndarray
-        Normalized DQ build-up (1 - S/S₀), 1D array.
-    num_continuous: int
-        Number of points for continuous x-axis. Default 100.
+        Normalized difference (1 - S'/S₀), 1D array.
+    
     time_discrete: np.ndarray
-        Discrete time values corresponding to data points, in ms, 1D array. Only present if l0, l10, and spin_rate are provided.
+        Discrete time values corresponding to data points, in ms, 1D array.
     time_continuous: np.ndarray
-        Continuous time values for plotting the fitted curve, in ms, 1D array. Only present if l0, l10, and spin_rate are provided.
+        Continuous time values for plotting the fitted curve, in ms, 1D array.
     loop_counters: np.ndarray
-        Loop counter values, 1D array. Only present if l0, l10, and spin_rate are provided.
-
+        Loop counter values, 1D array.
+        
+    Methods
+    -------
+    set_time_axis
+        Create the time axis corresponding to the data array using rotor cycle parameters.
+    plot_difference
+        Plot the normalized difference (1 - S'/S₀) against the recoupling time.
+        
     Examples
     --------
     >>> exp = DoubleQuantum("dq_buildup.txt", l0=1, l10=1, spin_rate=10.0)
@@ -1926,6 +2226,8 @@ class DoubleQuantum(Fid_pair):
     l10: int | None = None
     spin_rate: float | None = None
 
+    truncated_n_points: int | None = None
+    num_continuous: int = 100
     verbose: bool = False
 
     def __post_init__(self):
@@ -1938,11 +2240,108 @@ class DoubleQuantum(Fid_pair):
         print(self.difference) if self.verbose else ""
         
         if isinstance(self.l0, Number) and isinstance(self.l10, Number) and isinstance(self.spin_rate, Number):
-            self.time_discrete, self.time_continuous, self.loop_counters = self.set_x_axis(0, 
-                            self.l0, 
-                            self.l10, 
-                            self.spin_rate, 
-                            self.n_points, 
-                            self.num_continuous,
-                            )
-            print(f"\n{self.n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
+            self.set_time_axis(self.l0, self.l10, self.spin_rate, self.num_continuous)
+            # For different pulse sequences, the time axis can also be defined by calling the .set_x_axis() method using more general loop counter settings. 
+
+
+    @property
+    def dephasing(self) -> np.ndarray: 
+        return self.modulated
+
+    @property
+    def dephasing_untruncated(self) -> np.ndarray: 
+        return self.modulated_untruncated
+    
+    @property
+    def time_discrete(self) -> np.ndarray | None:
+        return self.x_discrete
+    
+    @property
+    def time_continuous(self) -> np.ndarray:
+        return self.x_continuous
+    
+
+    def set_time_axis(self, 
+        l0: int, 
+        l10: int, 
+        spin_rate: float | None = None, 
+        num_continuous: int = 100,
+        ) -> None:
+        """
+        Create the time axis corresponding to the data array. In the form of initial_value + (1/spin_rate)*[list of \
+            loop counter with defined start value (l0 + 1), increment (l10 * 2), and number of points].
+
+        Parameters
+        ----------
+        l0: int
+            Rotor cycles for the first point.
+        l10: int
+            Increment constant defined in the pulse program.
+        spin_rate: float, optional
+            Spinning rate in kHz. If not specified, the current attribute self.spin_rate will be used for calculation. Default is None. 
+        num_continuous: int, optional
+            How many points is generated for an artificial x-axis used for trendlines. Default is 100.
+
+        Returns
+        -------
+        None
+
+        Examples
+        --------
+        >>> exp.set_time_axis(l0=1, l10=1, spin_rate=17.0)
+        """
+        self.l0 = l0
+        self.l10 = l10
+
+        super().set_x_axis(0, 
+                            l0 + 1, 
+                            l10 * 2, 
+                            self.rotor_cycles_per_loop, 
+                            spin_rate, 
+                            num_continuous)
+        
+        assert self.time_discrete is not None, "Time axis generation failed."
+        print(f"\n{self.n_points :d} steps, time increment {2*l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
+
+
+    def plot_difference(self, 
+                    **kwargs: Any
+                    ) -> tuple[Figure, Axes]:
+        """
+        Plot the relative difference (1 - S'/S₀) against the recoupling time.
+
+        Parameters
+        ----------
+        xlim: tuple[float, float], optional
+            Limits for x-axis. Default is None.
+        ylim: tuple[float, float], optional
+            Limits for y-axis. Default is None.
+        figure_size: tuple[float, float], optional
+            Size of the figure (width, height). Default is (4, 4).
+        show_legend: bool, optional
+            Whether to show legend. Default is False.
+        **kwargs: optional
+            Additional keyword arguments for plt.plot()
+
+        Returns
+        -------
+        fig: Figure
+            The created figure object
+        ax: Axes
+            The created axes object
+
+        Examples
+        --------
+        >>> fig, ax = exp.plot_difference()
+        >>> fig, ax = exp.plot_difference(xlim=(0, 10), ylim=(0, 0.3))
+        """
+        if self.time_discrete is None:
+            if isinstance(self.l0, Number) and isinstance(self.l10, Number) and isinstance(self.spin_rate, Number):
+                self.set_time_axis(self.l0, self.l10, self.spin_rate, self.num_continuous)
+            else:
+                raise AttributeError("Time axis does not exist. Please specify l0, l10, and n_points.")
+        
+        kwargs.setdefault('x_label', 'Recoupling time (ms)')
+        kwargs.setdefault('y_label', '1 - S/S₀')
+
+        return super().plot_difference(**kwargs)
