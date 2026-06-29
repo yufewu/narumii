@@ -19,7 +19,7 @@ from matplotlib.axes import Axes
 
 
 def _set_phases(
-        phase_range: tuple[float, float] | None, 
+        phase_range: Sequence[float] | None, 
         phase_increment: float | None, 
         n_points: int
         ) -> tuple[tuple[float, float], float]:
@@ -54,7 +54,7 @@ def _set_phases(
             phase_range = (0, 180)
         phase_increment = (phase_range[1] - phase_range[0]) / (n_points - 1)
 
-    return phase_range, phase_increment
+    return (phase_range[0], phase_range[1]), phase_increment
 
 
 def _set_x_axis(
@@ -684,7 +684,7 @@ class Fid_pair:
     truncated_n_points: int | None = None
     txt_use_first_point_as_reference: bool = False
     fid_use_first_point_as_reference: bool = True
-    rotor_cycles_per_loop: int = 16
+    rotor_cycles_per_loop: int = 2
 
     data: np.ndarray = field(init=False)
     n_points: int = field(init=False)
@@ -702,7 +702,7 @@ class Fid_pair:
     length_per_counter: float = field(init=False)
     num_continuous: int = field(init=False, default=100)
 
-    x_discrete: np.ndarray | None = field(init=False, default=None)
+    x_discrete: np.ndarray = field(init=False)
     x_continuous: np.ndarray = field(init=False)
     loop_counters: np.ndarray = field(init=False)
 
@@ -710,7 +710,7 @@ class Fid_pair:
 
 
     def __post_init__(self) -> None:
-        """Process data after initialization """
+        """Process data after initialization. """
         self._parse_input_data()
 
         self.modulated_untruncated = self.modulated
@@ -782,7 +782,6 @@ class Fid_pair:
         """Truncate the data. """
         self.modulated = self.modulated_untruncated[:truncated_n_points]
         self.reference = self.reference_untruncated[:truncated_n_points]
-        self.difference = self.difference_untruncated[:truncated_n_points]
 
         self.n_points = truncated_n_points
         self._calculate_difference()
@@ -936,9 +935,7 @@ class Fid_pair:
         --------
         >>> fig, ax = exp.plot_fit(show_legend=True)
         >>> fig, ax = exp.plot_fit(xlim=(0, 10), ylim=(0, 0.3), color='red')
-        """
-        assert self.x_discrete is not None
-        
+        """        
         return _plot_fit(self.difference, self.x_discrete, self.predict, self.x_continuous, **kwargs)
 
     
@@ -1080,15 +1077,21 @@ class Fid_triple:
     >>> fid_triple.to_txt("output_difference.txt", key='difference')
     """
     filename: str
+    truncated_n_points: int | None = None
+    txt_use_first_point_as_reference: bool = False
+    fid_use_first_point_as_reference: bool = True
     alpha: float = 1
 
     data: np.ndarray = field(init=False)
     n_points: int = field(init=False)
     modulated: np.ndarray = field(init=False)
+    modulated_untruncated: np.ndarray = field(init=False)
     compensated: np.ndarray = field(init=False)
+    compensated_untruncated: np.ndarray = field(init=False)
     difference: np.ndarray = field(init=False)
     difference_not_compensated: np.ndarray = field(init=False)
     reference: np.ndarray = field(init=False)
+    reference_untruncated: np.ndarray = field(init=False)
 
     x_initial_value: float = field(init=False, default=0)
     loop_counter_start: int = field(init=False)
@@ -1096,37 +1099,108 @@ class Fid_triple:
     length_per_counter: float = field(init=False)
     num_continuous: int = field(init=False, default=100)
 
-    x_discrete: np.ndarray | None = field(init=False, default=None)
+    x_discrete: np.ndarray = field(init=False)
     x_continuous: np.ndarray = field(init=False)
     loop_counters: np.ndarray = field(init=False)
 
     load_text_options: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if PurePath(self.filename).suffix == '.txt':
-            self.data = np.loadtxt(self.filename, **self.load_text_options)
-        elif PurePath(self.filename).suffix == '.fid':
-            self.data, _ = read_fid(self.filename)
-        else:
-            raise TypeError("File must be .txt or .fid! ")
+        """Process data after initialization. """
+        self._parse_input_data()
+
+        self.modulated_untruncated = self.modulated
+        self.compensated_untruncated = self.compensated
+        self.reference_untruncated = self.reference
         
-        if self.data.shape[0] % 3 == 1:
+        if self.truncated_n_points is not None:
+            self.apply_truncation(self.truncated_n_points)
+
+        self._calculate_difference()
+
+
+    def _parse_input_data(self) -> None: 
+        """Identify the type of input data and assign parser functions. Process the input data to generate self.modulated and 
+        self.reference. """
+
+        if isinstance(self.filename, (str, Path)):
+            suffix = PurePath(self.filename).suffix.lower()
+
+            if suffix == '.txt':
+                self.data = np.loadtxt(self.filename, **self.load_text_options)
+                use_first_point_as_reference: bool = self.txt_use_first_point_as_reference
+
+            elif suffix == '.fid':
+                self.data, _ = read_fid(str(self.filename))
+                use_first_point_as_reference: bool = self.fid_use_first_point_as_reference
+            else:
+                raise TypeError("File must be .txt or .fid! ")
+            
+        else:
+            _input_data = np.asarray(self.filename)
+            if _input_data.ndim == 1:
+                self.data = _input_data
+                use_first_point_as_reference: bool = True
+            elif _input_data.ndim == 2:
+                self.data = _input_data.reshape(-1)
+                use_first_point_as_reference: bool = False
+            else:
+                raise ValueError("Input data array must be 1 or 2-dimensional.")  
+        
+        if use_first_point_as_reference is True:
+            self._parse_as_1D()
+        else:
+            self._parse_as_2D()
+
+        
+    def _parse_as_2D(self) -> None:
+        """Parse data as a 2D array, where the second half of the data is reference. """
+        
+        if self.data.shape[0] % 3 != 0:
             raise ValueError("Data length is not divisible by 3, cannot be reshaped into triples.")
+        
         self.data = np.reshape(self.data, (3, -1))
+        
         self.n_points = self.data.shape[1]
+        self.n_points_total = self.n_points
         self.modulated = self.data[0]
         self.compensated = self.data[1]
         self.reference = self.data[2]
+        self.n_points = self.data.shape[1]
 
-        self.calculate_difference(self.modulated, self.compensated, self.reference)
+
+    def _parse_as_1D(self) -> None:
+        """Parse data as a 1D array, use the first point as reference. """
+
+        self.n_points = self.data.shape[0] - 1
+        self.modulated = self.data[1:]
+        self.reference = np.ones_like(self.modulated) * self.data[0]
+
+
+    def apply_truncation(self, truncated_n_points) -> None:
+        """Truncate the data. """
+        self.modulated = self.modulated_untruncated[:truncated_n_points]
+        self.compensated = self.compensated_untruncated[:truncated_n_points]
+        self.reference = self.reference_untruncated[:truncated_n_points]
+
+        self.n_points = truncated_n_points
+        self._calculate_difference()
+
+    
+    def _calculate_difference(self) -> None: 
+        """
+        Calculate the reference and difference array from the data. 
+        """
+        self.difference = _calculate_difference(self.modulated, self.reference) + self.alpha*_calculate_difference(self.compensated, self.reference)
+        self.difference_uncompensated = _calculate_difference(self.modulated, self.reference)
 
 
     def set_x_axis(self, 
             x_initial_value: float,
             loop_counter_start: int, 
             loop_counter_increment: int, 
-            length_per_counter: float, 
-            n_points: int, 
+            rotor_cycles_per_loop: int,
+            spin_rate: float | None = None, 
             num_continuous: int = 100,
             ) -> None:
         """
@@ -1164,16 +1238,21 @@ class Fid_triple:
         self.x_initial_value = x_initial_value
         self.loop_counter_start = loop_counter_start
         self.loop_counter_increment = loop_counter_increment
-        self.length_per_counter = length_per_counter
-        self.n_points = n_points
-        self.num_continuous = num_continuous
+        self.rotor_cycles_per_loop = rotor_cycles_per_loop
+        if num_continuous is not None: 
+            self.num_continuous = num_continuous
 
-        self.x_discrete, self.x_continuous, self.loop_counters = _set_x_axis(x_initial_value, 
-                                                            loop_counter_start, 
-                                                            loop_counter_increment, 
-                                                            length_per_counter, 
-                                                            n_points, 
-                                                            num_continuous)
+        if spin_rate is not None: 
+            self.spin_rate = spin_rate
+        elif not hasattr(self, "spin_rate"):
+            raise AttributeError("Spin rate is not provided. ")
+
+        self.x_discrete, self.x_continuous, self.loop_counters = _set_x_axis(self.x_initial_value, 
+                                                            self.loop_counter_start, 
+                                                            self.loop_counter_increment, 
+                                                            self.rotor_cycles_per_loop / self.spin_rate, 
+                                                            self.n_points, 
+                                                            self.num_continuous)
 
 
     def calculate_difference(self, 
@@ -1364,8 +1443,8 @@ class CTDrenar(Fid_single):
     phase_continuous: np.ndarray
         Continuous phase values for plotting the fitted curve, in degrees, 1D array.
 
-    dephasing_time: float
-        Dephasing time calculated from l0 and spin rate (if provided), in ms.
+    recoupling_time: float
+        Recoupling time calculated from l0 and spin rate (if provided), in ms.
     popt: np.ndarray
         Optimized parameters from curve fitting.
     pconv: np.ndarray
@@ -1394,7 +1473,7 @@ class CTDrenar(Fid_single):
     >>> beff = exp.fit()
     >>> fig, ax = exp.plot_fit(show_legend=True)
     """
-    phase_range: tuple[float, float] | None = None
+    phase_range: Sequence[float] | None = None
     phase_increment: float | None = None
 
     l0: int | None = None
@@ -1407,7 +1486,7 @@ class CTDrenar(Fid_single):
     phase_continuous: np.ndarray = field(init=False)
 
     dephasing: np.ndarray = field(init=False)
-    dephasing_time: float = field(init=False)
+    recoupling_time: float = field(init=False)
     popt: np.ndarray = field(init=False)
     pconv: np.ndarray = field(init=False)
     z_opt: float = field(init=False)
@@ -1439,7 +1518,7 @@ class CTDrenar(Fid_single):
         self.x_continuous = self.phase_continuous
 
         if isinstance(self.l0, Number) and isinstance(self.spin_rate, Number): 
-            self.dephasing_time = 16 * self.l0 / self.spin_rate
+            self.recoupling_time = 16 * self.l0 / self.spin_rate
 
 
     def plot_difference(self, 
@@ -1488,16 +1567,16 @@ class CTDrenar(Fid_single):
         z_opt: float
             Optimized z-value from the fitting, in ms^2, if dephasing time is not provided. 
         """
-        if not hasattr(self, 'dephasing_time'):
+        if not hasattr(self, 'recoupling_time'):
             if isinstance(self.l0, Number) and isinstance(self.spin_rate, Number):
-                self.dephasing_time = 16 * self.l0 / self.spin_rate
+                self.recoupling_time = 16 * self.l0 / self.spin_rate
             else:
                 warnings.warn("l0 and spin_rate must be provided to calculate dephasing time for fitting. Do so when initializing the objec or add them as attributes seperately.")
         
         super().fit()
 
-        if self.dephasing_time is not None:
-            self.beff_opt = np.sqrt(self.z_opt)/self.dephasing_time
+        if self.recoupling_time is not None:
+            self.beff_opt = np.sqrt(self.z_opt)/self.recoupling_time
             print(f'Effective dipolar coupling constant by analytical fitting = {self.beff_opt:.3f} kHz')
             #r_opt = (mu_0 / (4*pi) * (gamma_I*gamma_S*hbar) / (2*pi) / d_opt /1000)**(1/3) * 10**9  # in nm
             #print(f'Effective distance r = {r_opt:.3f} nm')
@@ -1705,7 +1784,7 @@ class Redor(Fid_pair):
         return self.modulated_untruncated
     
     @property
-    def time_discrete(self) -> np.ndarray | None:
+    def time_discrete(self) -> np.ndarray:
         return self.x_discrete
     
     @property
@@ -1744,12 +1823,15 @@ class Redor(Fid_pair):
         """
         self.l0 = l0
         self.l10 = l10
+        if spin_rate is not None: 
+            self.spin_rate = spin_rate
+        self.num_continuous = num_continuous
 
         super().set_x_axis(0, 
                             l0 + 1, 
                             l10 * 2, 
-                            self.rotor_cycles_per_loop, 
-                            spin_rate, 
+                            1, 
+                            self.spin_rate, 
                             num_continuous)
         
         assert self.time_discrete is not None, "Time axis generation failed."
@@ -1991,10 +2073,7 @@ class Redor3(Fid_triple):
     truncated_n_points: int | None = None
     num_continuous: int = 100
     n_rotor_cycles: np.ndarray = field(init=False)
-    time_discrete: np.ndarray = field(init=False)
-    time_continuous: np.ndarray = field(init=False)
 
-    dephasing: np.ndarray = field(init=False)
     reference: np.ndarray = field(init=False)
     difference: np.ndarray = field(init=False)
 
@@ -2008,40 +2087,7 @@ class Redor3(Fid_triple):
 
     def __post_init__(self):
 
-        if PurePath(self.filename).suffix == '.txt':
-            self.data = np.loadtxt(self.filename)
-            if self.data.shape[0] % 3 == 1:
-                raise ValueError("Data length is not divisible by 3, cannot be reshaped into triplets.")
-            self.data = np.reshape(self.data, (3, -1))
-
-            if self.n_points is None:
-                self._n_points = np.shape(self.data)[1]
-            else:
-                self._n_points = self.n_points
-
-            self.dephasing = self.data[0,0:self._n_points]
-            self.compensation = self.data[1,0:self._n_points]
-            self.reference = self.data[2,0:self._n_points]
-
-        elif PurePath(self.filename).suffix == '.fid':  # assert simulated fid using simpson with the first point being the reference. 
-            self.data, _ = read_fid(self.filename)
-            if self.truncated_n_points is None:
-                self.n_points = np.shape(self.data)[0] - 1   
-            else:
-                self.n_points = self.truncated_n_points     
-            
-            # if the following truncation is not correct, you need to use the original contents in the data attribute. 
-            self.dephasing = self.data[1:self._n_points+1]
-            self.compensation = np.ones(self._n_points) * self.data[0]
-            self.reference = self.compensation
-
-        else:
-            raise TypeError("File must be .txt or .fid! ")      
-            
-        if np.any(self.reference == 0):
-            raise ValueError("Reference contains zero(s), cannot divide.")
-        else:
-            self.difference = 1 - self.dephasing/self.reference + self.alpha - self.alpha*self.compensation/self.reference
+        super().__post_init__()
 
         print("\nList of data: ") if self.verbose else ""
         print(self.data) if self.verbose else ""
@@ -2053,10 +2099,27 @@ class Redor3(Fid_triple):
             # For different pulse sequences, the time axis can also be defined by calling the .set_x_axis() method using more general loop counter settings. 
     
 
+    @property
+    def dephasing(self) -> np.ndarray: 
+        return self.modulated
+
+    @property
+    def dephasing_untruncated(self) -> np.ndarray: 
+        return self.modulated_untruncated
+    
+    @property
+    def time_discrete(self) -> np.ndarray:
+        return self.x_discrete
+    
+    @property
+    def time_continuous(self) -> np.ndarray:
+        return self.x_continuous
+    
+
     def set_time_axis(self, 
         l0: int, 
         l10: int, 
-        spin_rate: float, 
+        spin_rate: float | None = None, 
         num_continuous: int = 100,
         ) -> None:
         """
@@ -2090,18 +2153,19 @@ class Redor3(Fid_triple):
         """
         self.l0 = l0
         self.l10 = l10
-        self.spin_rate = spin_rate
+        if spin_rate is not None: 
+            self.spin_rate = spin_rate
         self.num_continuous = num_continuous
 
-        self.time_discrete, self.time_continuous, self.loop_counters = _set_x_axis(0, 
-                            self.l0 + 1, 
-                            self.l10 * 2, 
-                            1/self.spin_rate, 
-                            self.n_points, 
-                            self.num_continuous)
+        super().set_x_axis(0, 
+                            l0 + 1, 
+                            l10 * 2, 
+                            1, 
+                            self.spin_rate, 
+                            num_continuous)
         
         self.x_discrete = self.time_discrete
-        self.x_continuous = self.x_continuous
+        self.x_continuous = self.time_continuous
         
         print(f"\n{self.n_points :d} steps, time increment {2*self.l10} rotor cycles, {self.time_discrete[1] - self.time_discrete[0]:.3f} ms for each step.") if self.verbose else ""
 
@@ -2296,7 +2360,7 @@ class DoubleQuantum(Fid_pair):
         super().set_x_axis(0, 
                             l0 + 1, 
                             l10 * 2, 
-                            self.rotor_cycles_per_loop, 
+                            1, 
                             spin_rate, 
                             num_continuous)
         

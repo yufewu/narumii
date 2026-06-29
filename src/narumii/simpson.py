@@ -180,9 +180,14 @@ class Optimizer(Simulator):
     Currently optimizes the b (dipolar coupling) parameter.
     """
     exp_type: str = 'CTDrenar'
+    data_parser_exp: Callable | None = None
+    data_parser_sim: Callable | None = None
+    bounds: tuple[float, float] = (-1500, 0)
 
     param_name: str = field(init=False)
     residual_function: Callable = field(init=False)
+
+    data_parser: Callable = field(init=False)
 
     def __post_init__(self):
         for i in range(6):
@@ -199,6 +204,11 @@ class Optimizer(Simulator):
             self.data_parser = lambda filepath: DoubleQuantum(filepath).difference
         else:
             raise ValueError(f"Unsupported experiment type: {self.exp_type}")
+        
+        if self.data_parser_exp is None: 
+                self.data_parser_exp = self.data_parser
+        if self.data_parser_sim is None: 
+                self.data_parser_sim = self.data_parser
     
     
     def _objective(
@@ -221,17 +231,17 @@ class Optimizer(Simulator):
         if not hasattr(self, 'residual_function') or self.residual_function is None:
             raise ValueError("Residual function not provided.")
         
-        if not hasattr(self, 'data_parser'):
-            raise ValueError("Data extractor not provided.")
+        if self.data_parser_exp is None or self.data_parser_sim is None:
+            raise ValueError("Data parser is not provided.")
         
-        # Run simulation with the given parameter value
         self.params[self.param_name] = str(param)
+
         create_input_file(self.filenames, self.params)
         subprocess.run([self.simpson_path, self.filenames['input']], check=True)
         
         # Calculate residual using the data extractor
-        simulated_data = self.data_parser(self.filenames['output'])
-        reference_data = self.data_parser(self.filenames['reference'])
+        simulated_data = self.data_parser_sim(self.filenames['output'])
+        reference_data = self.data_parser_exp(self.filenames['reference'])
         residual = self.residual_function(simulated_data, reference_data)
         print(f"  {self.param_name} = {param:.2f} Hz, residual = {residual:.4f}")
 
@@ -250,7 +260,7 @@ class Optimizer(Simulator):
         self, 
         param_name: str, 
         residual_function: Callable = residual_function, 
-        bounds: Sequence = (-1500, 0), 
+        bounds: tuple[float, float] | None = None, 
         method: str = 'bounded', 
         options: dict = {'xatol': 1}
         ) -> tuple[float, float, float]:
@@ -282,6 +292,9 @@ class Optimizer(Simulator):
         if not hasattr(self, 'filenames'):
             raise ValueError("Filenames not provided.")
         
+        if bounds is not None: 
+            self.bounds = bounds
+        
         if param_name.lower() == 'b':
             param_name = 'beff'
         self.param_name = param_name
@@ -296,7 +309,7 @@ class Optimizer(Simulator):
         tic = time.time()
         optimization_result: OptimizeResult = minimize_scalar(
             self._objective,
-            bounds=bounds,
+            bounds=self.bounds,
             method=method,
             options=options
         )   # type: ignore
