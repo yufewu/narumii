@@ -20,20 +20,24 @@ def create_filenames(
         template: str | None = None,
         **kwargs: str, 
     ) -> dict[str, str]:
-    """
-    Create filenames used for simulations based on a given basename. 
-    
+    """Create filenames for simulation files from a basename.
+
     Parameters
-    -----
-    basename: str
-        Base name for simulation files.
-    **kwargs: str
-        Additional filenames to include in the returned dictionary.
+    ----------
+    basename : str
+        Base name for simulation files (without extension).
+    template : str or None, optional
+        Path to a template file to use. If ``None``, the default
+        ``basename + '.template'`` will be used (default: ``None``).
+    **kwargs : str
+        Extra filename mappings to include in the returned dict.
 
     Returns
-    ------
-    filenames: dictionary
-        Container for filenames, with keys: 'template', 'input', 'output', 'log', etc..
+    -------
+    dict[str, str]
+        Mapping of filename keys to their paths. Always contains keys
+        ``'input'``, ``'output'``, ``'log'``, ``'txt'`` and ``'template'``,
+        plus any additional items from ``kwargs``.
     """
     filenames = {
         'input': basename + '.in', 
@@ -52,20 +56,33 @@ def create_input_file(
     filenames: dict[str, str], 
     params: dict[str, str] | None = None
     ) -> None:
-    """
-    Create SIMPSON input file.
+    """Generate a SIMPSON input file by substituting parameters into a template.
+
+    The template file is read from ``filenames['template']`` and occurrences of
+    the token ``VALUE_{KEY}`` (where ``KEY`` is an upper-case parameter
+    name) are replaced with the corresponding value from ``params``.
 
     Parameters
-    -----
-    filenames: dictionary
-        Container for filenames, must have keys: 'template', 'input', 'output'.
-        template: the template file based on which the input file is created. 
-        input: the path of the created input file.
-        output: the path of theoutput file to be created by simulation.
-    params: dictionary
-        Container for simulation parameters.
-    Returns
+    ----------
+    filenames : dict[str, str]
+        Mapping that must contain at least the keys ``'template'``,
+        ``'input'`` and ``'output'``. ``'template'`` is the path to the
+        template file; ``'input'`` is the path to write the generated input
+        file; ``'output'`` is the expected SIMPSON output filename and will be
+        inserted into the template as the value for ``output_file``.
+    params : dict[str, str] or None, optional
+        Parameter values to substitute into the template. Keys are case-
+        insensitive and will be converted to the placeholder format
+        ``VALUE_{KEY}`` when performing replacements. If ``None``, an empty
+        parameter set is used (default: ``None``).
+
+    Raises
     ------
+    FileNotFoundError
+        If the template file (``filenames['template']``) does not exist.
+
+    Returns
+    -------
     None
     """
     if 'input' not in filenames:
@@ -91,24 +108,25 @@ def create_input_file(
 
 @dataclass
 class Simulator:
-    """
-    Simulator class to run SIMPSON simulations.
-    
+    """Simulator for running SIMPSON simulations.
+
     Parameters
-    -----
-    simpson_path: str
-        Path to the SIMPSON executable.
+    ----------
+    simpson_path : str
+        Path to the SIMPSON executable binary that will be invoked.
 
     Attributes
-    -----
-    simpson_path: str
+    ----------
+    simpson_path : str
         Path to the SIMPSON executable.
-    angle_set: list
-        Euler angles as a list: [alpha1, beta1, gamma1, alpha2, beta2, gamma2].
-    params: dict
-        Experimental parameters for the simulation.
-    b: float
-        Dipolar coupling constant.
+    params : dict[str, str]
+        Dictionary of parameter names and stringified values that will be
+        substituted into the input template.
+    filenames : dict[str, str]
+        Filenames used for input/output when running simulations. Populated
+        when ``create_filenames`` is used or when provided to ``simulate``.
+    b, spin_rate, angle_set : optional
+        Optional simulation parameters set when calling ``simulate``.
     """
 
     simpson_path: str
@@ -128,18 +146,38 @@ class Simulator:
         angle_set: list[float] | None = None, 
         **kwargs: dict[str, str]
         ) -> float:
-        """
-        Run SIMPSON simulation with the given input file.
-        
+        """Run a single SIMPSON simulation using the current settings.
+
         Parameters
-        -----
-        input_file: str
-            Path to the SIMPSON input file.
+        ----------
+        filenames : dict[str, str] or None, optional
+            Filename mapping to use for this run. If provided, it will be
+            stored on the simulator instance. If not provided, the instance
+            must already have a ``filenames`` attribute (otherwise a
+            ``ValueError`` is raised).
+        b : float or None, optional
+            Dipolar coupling constant to set for this run. When provided,
+            it is stored in ``self.params['beff']`` (default: ``None``).
+        spin_rate : float or None, optional
+            Rotor/spin rate to set for this run (stored as
+            ``self.params['spin_rate']``) (default: ``None``).
+        angle_set : list[float] or None, optional
+            List of six Euler angles; when provided they will be stored in
+            ``self.params['angle1']``..``'angle6'`` (default: ``None``).
+        **kwargs : dict
+            Additional parameter key/value pairs to insert into
+            ``self.params`` before running the simulation.
 
         Returns
+        -------
+        float
+            Elapsed wall-clock time for the call to the SIMPSON executable,
+            in seconds.
+
+        Raises
         ------
-        elapsed_time: float
-            Elapsed time for the simulation in seconds.
+        ValueError
+            If no filenames mapping is available on the simulator instance.
         """
         if filenames is not None:
             self.filenames = filenames
@@ -173,65 +211,104 @@ class Simulator:
 
 @dataclass
 class Optimizer(Simulator):
-    """
-    Optimizer class to optimize parameters in SIMPSON simulations.
-    
-    Inherits from Simulator class and provides methods for parameter optimization.
-    Currently optimizes the b (dipolar coupling) parameter.
+    """Optimizer that runs repeated SIMPSON simulations to fit parameters.
+
+    Inherits from :class:`Simulator` and adds helpers to parse experimental
+    and simulated data, compute residuals, and perform scalar optimization
+    (currently using ``scipy.optimize.minimize_scalar``).
+
+    Attributes
+    ----------
+    exp_type : str
+        Experiment type used to choose a default data parser (e.g.
+        ``'CTDrenar'``, ``'REDOR'``, ``'DQ'``).
+    data_parser_exp, data_parser_sim : callable or None
+        Functions that extract comparison vectors from experimental and
+        simulated output files. If not provided, a default is selected from
+        ``exp_type``.
+    param_name : str
+        Name of the parameter being optimized (e.g. ``'beff'``).
+    residual_function : callable
+        Function that computes the residual between simulated and
+        experimental data (e.g. RMSD).
+    bounds : Sequence[float]
+        Bounds passed to the scalar optimizer.
     """
     exp_type: str = 'CTDrenar'
-
+    data_parser_exp: Callable | None = None
+    data_parser_sim: Callable | None = None
+    
     param_name: str = field(init=False)
     residual_function: Callable = field(init=False)
+    bounds: Sequence[float] = field(init=False)
+
+    data_parser: Callable = field(init=False)
 
     def __post_init__(self):
         for i in range(6):
             self.params[f"angle{i+1}"] = '0'
 
-        # Default data extractor using CTDrenar
-        if self.exp_type.lower() in ['ctdrenar', 'ct_drenar', 'ct-drenar']:
-            self.data_parser = lambda filepath: CTDrenar(filepath).difference
-        elif self.exp_type.lower() in ['redor', 'reapdor']:
-            self.data_parser = lambda filepath: Redor(filepath).difference
-        elif self.exp_type.lower() in ['redor3']:
-            self.data_parser = lambda filepath: Redor3(filepath).difference
-        elif self.exp_type.lower() in ['dq', 'doublequantum', 'double-quantum', 'double_quantum']:
-            self.data_parser = lambda filepath: DoubleQuantum(filepath).difference
-        else:
-            raise ValueError(f"Unsupported experiment type: {self.exp_type}")
+        # Default data extractors
+        match self.exp_type.lower():
+            case 'ctdrenar' | 'ct_drenar' | 'ct-drenar':
+                self.data_parser = lambda filepath: CTDrenar(filepath).difference
+            case 'redor' | 'reapdor':
+                self.data_parser = lambda filepath: Redor(filepath).difference
+            case 'redor3':
+                self.data_parser = lambda filepath: Redor3(filepath).difference
+            case 'dq' | 'doublequantum' | 'double-quantum' | 'double_quantum':
+                self.data_parser = lambda filepath: DoubleQuantum(filepath).difference
+            case _:
+                raise ValueError(f"Unsupported experiment type: {self.exp_type}")
+        
+        if self.data_parser_exp is None: 
+                self.data_parser_exp = self.data_parser
+        if self.data_parser_sim is None: 
+                self.data_parser_sim = self.data_parser
     
     
     def _objective(
         self, 
         param: float
         ) -> float:
-        """
-        Objective function for optimization. Evaluates residual for a given parameter value.
-        
+        """Objective wrapper called by the optimizer for a single parameter.
+
+        This method updates the input template with the provided parameter,
+        runs SIMPSON to generate a simulated output file, extracts the
+        comparison vectors from both simulated and reference files, and
+        returns the residual computed by ``self.residual_function``.
+
         Parameters
-        -----
-        param: float
-            The parameter value to evaluate.
-        
+        ----------
+        param : float
+            Parameter value to evaluate.
+
         Returns
+        -------
+        float
+            Residual value (lower is better) as returned by
+            ``self.residual_function``.
+
+        Raises
         ------
-        residual: float
-            The residual between simulated and reference data.
+        ValueError
+            If the residual function or data parsers are not set on the
+            optimizer instance.
         """
         if not hasattr(self, 'residual_function') or self.residual_function is None:
             raise ValueError("Residual function not provided.")
         
-        if not hasattr(self, 'data_parser'):
-            raise ValueError("Data extractor not provided.")
+        if self.data_parser_exp is None or self.data_parser_sim is None:
+            raise ValueError("Data parser is not provided.")
         
-        # Run simulation with the given parameter value
         self.params[self.param_name] = str(param)
+
         create_input_file(self.filenames, self.params)
         subprocess.run([self.simpson_path, self.filenames['input']], check=True)
         
         # Calculate residual using the data extractor
-        simulated_data = self.data_parser(self.filenames['output'])
-        reference_data = self.data_parser(self.filenames['reference'])
+        simulated_data = self.data_parser_sim(self.filenames['output'])
+        reference_data = self.data_parser_exp(self.filenames['reference'])
         residual = self.residual_function(simulated_data, reference_data)
         print(f"  {self.param_name} = {param:.2f} Hz, residual = {residual:.4f}")
 
@@ -249,38 +326,42 @@ class Optimizer(Simulator):
     def optimize(
         self, 
         param_name: str, 
-        residual_function: Callable = residual_function, 
-        bounds: Sequence = (-1500, 0), 
-        method: str = 'bounded', 
-        options: dict = {'xatol': 1}
+        residual_function: Callable, 
+        bounds: Sequence, 
+        method: str, 
+        options: dict, 
         ) -> tuple[float, float, float]:
-        """
-        Optimize the specified parameter.
-        
+        """Run scalar optimization to fit a single simulation parameter.
+
         Parameters
-        -----
-        param_name: str
-            Name of the parameter to optimize (default: 'beff').
-        residual_function: function
-            Function to compute residuals.
-        bounds: tuple
-            (min, max) bounds for optimization.
-        method: str
-            Optimization method supported in scipy.optimize.minimize_scalar (default: 'bounded').
-        options: dict
-            Additional options for the optimizer (default: {'xatol': 1}).
-        
+        ----------
+        param_name : str
+            Name of the parameter to optimize. If the user supplies ``'b'``
+            it is translated to ``'beff'`` internally.
+        residual_function : callable
+            Function accepting two arrays (simulated, experimental) and
+            returning a scalar residual. If ``None``, a default RMSD
+            function is used.
+        bounds : Sequence
+            Two-element sequence giving (min, max) bounds for the optimizer.
+        method : str
+            Method passed to ``scipy.optimize.minimize_scalar`` (e.g.
+            ``'bounded'``).
+        options : dict
+            Additional solver options passed to the optimizer.
+
         Returns
-        ------
-        optimization_result.x: float
-            Optimized parameter value.
-        optimization_result.fun: float
-            Residual at optimized parameter.
-        elapsed_time: float
-            Elapsed time for the optimization in seconds.
-        """   
+        -------
+        tuple
+            ``(x_opt, fun_opt, elapsed_time)`` where ``x_opt`` is the best-fit
+            parameter value, ``fun_opt`` is the residual at that value, and
+            ``elapsed_time`` is the total wall-clock time spent in seconds.
+        """
         if not hasattr(self, 'filenames'):
             raise ValueError("Filenames not provided.")
+        
+        if bounds is not None: 
+            self.bounds = bounds
         
         if param_name.lower() == 'b':
             param_name = 'beff'
@@ -296,7 +377,7 @@ class Optimizer(Simulator):
         tic = time.time()
         optimization_result: OptimizeResult = minimize_scalar(
             self._objective,
-            bounds=bounds,
+            bounds=self.bounds,
             method=method,
             options=options
         )   # type: ignore
@@ -340,8 +421,8 @@ def run_simulation(
         Default is None.
     params : list of str or dict, optional
         Simulation parameters. Can be either:
-        - A list of strings in 'key=value' format, e.g., ['spin_rate=17000.0', 'l0=1']
-        - A dictionary of key-value pairs, e.g., {'spin_rate': '17000.0', 'l0': '1'}
+        - A list of strings in 'key=value' format, e.g., ``['spin_rate=17000.0', 'l0=1']``
+        - A dictionary of key-value pairs, e.g., ``{'spin_rate': '17000.0', 'l0': '1'}``
         Default is None.
     verbose : bool, optional
         If True, print simulation progress to stdout. Default is True.
@@ -401,10 +482,10 @@ def run_optimization(
         Path to the Simpson executable.
     exp_type : str
         Type of NMR experiment. Supported values (either in full capitalized or small forms):  
-        - 'CTDRENAR', 'CT-DRENAR' for CTDrenar experiments  
-        - 'REDOR', 'REAPDOR' for REDOR/REAPDOR experiments  
-        - 'REDOR3' for compensated REDOR experiments  
-        - 'DQ', 'DOUBLEQUANTUM', 'DOUBLE-QUANTUM' for double quantum spectroscopy  
+        - `'CTDRENAR'`, `'CT-DRENAR'` for CTDrenar experiments  
+        - `'REDOR'`, `'REAPDOR'` for REDOR/REAPDOR experiments  
+        - `'REDOR3'` for compensated REDOR experiments  
+        - `'DQ'`, `'DOUBLEQUANTUM'`, `'DOUBLE-QUANTUM'` for double quantum spectroscopy  
     basename : str, optional
         Basename of the simulation file. Files will be generated based on this basename:  
         - input - basename.in  
@@ -423,7 +504,7 @@ def run_optimization(
         - A dictionary of key-value pairs  
         Default is None.
     param_name: str, optional
-        Name of the parameter to be optimized. Default is 'b'. 
+        Name of the parameter to be optimized. Default is `'b'`. 
     residual_function: Callable, optional
         The function used to calculate the residual difference between simulation and experiment. Default is .functions.compute_rmsd.  
     method: str, optional
@@ -433,11 +514,11 @@ def run_optimization(
     bounds: Sequence, optional
         Optimization bounds. Must have two finite items. 
         See [scipy document](https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.minimize_scalar.html). 
-        Default is "bounded". (-1500, 0). 
+        Default is `(-1500, 0)`. 
     options: dict, optional
         A dictionary of additional solver options.
         See [scipy document](https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.minimize_scalar.html). 
-        Default is {'xatol': 1}. 
+        Default is `{'xatol': 1}`. 
     verbose : bool, optional
         If True, print optimization progress to stdout. Default is True.
 
@@ -483,7 +564,7 @@ def run_optimization(
                 warnings.warn(f"Ignoring invalid parameter format '{param}'. Use key=value format.")
                 continue
             key, value = param.split('=', 1)
-            optimizer.params[key] = value
+            optimizer.params[key.lower()] = value
     elif isinstance(params, dict):
         optimizer.params.update(params)
 

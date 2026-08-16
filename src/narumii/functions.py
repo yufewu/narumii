@@ -435,11 +435,6 @@ def satrec(t: np.ndarray, a: float, b: float, R: float) -> np.ndarray:
     signal: np.ndarray
         Predicted signal values following: a - b*exp(-R*t).
 
-    Notes
-    -----
-    This function models the recovery of magnetization following saturation in
-    saturation-recovery experiments, particularly useful for T₁ relaxation measurements.
-
     Examples
     --------
     >>> t = np.linspace(0, 100, 100)
