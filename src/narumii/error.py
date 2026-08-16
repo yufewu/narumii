@@ -21,10 +21,10 @@ def error_parabolic_rmsd(
     n: int
         Number of data points.
     p: int, optional
-        Number of fitted parameters (default is 1).
+        Number of fitted parameters. Default is 1.
     sd_from_rmsd: bool, optional
-        Whether to estimate standard deviation from RMSD (default is True).
-    
+        Whether to estimate standard deviation from RMSD. Default is True.
+
     Returns
     ------
     ci: float
@@ -63,10 +63,10 @@ def error_parabolic_ssd(
     n: int
         Number of data points.
     p: int, optional
-        Number of fitted parameters (default is 1).
+        Number of fitted parameters. Default is 1.
     sd_from_rmsd: bool, optional
-        Whether to estimate standard deviation from RMSD (default is True).
-    
+        Whether to estimate standard deviation from RMSD. Default is True.
+
     Returns
     ------
     ci: float
