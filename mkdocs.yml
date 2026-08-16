@@ -1,5 +1,5 @@
 site_name: "NARUMII Docs"
-site-url: https://yufewu.github.io/narumii
+site_url: https://yufewu.github.io/narumii
 
 theme:
   name: material
