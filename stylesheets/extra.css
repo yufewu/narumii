@@ -1,0 +1,25 @@
+.doc-signature {
+    background-color: #f8f9fb !important; /* 浅灰色背景 */
+    border: 1px solid #e1e4e8 !important;
+    border-left: 5px solid #8e44ad !important; /* 左侧紫色条 */
+    padding: 10px !important;
+    white-space: pre-wrap !important; /* 核心：允许换行 */
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    display: block; 
+}
+
+.doc-signature code {
+    white-space: pre-wrap !important;
+}
+
+.doc-signature .name {
+    color: #8e44ad !important;
+    font-weight: bold;
+}
+
+
+.doc-source-link {
+    float: right;
+    font-size: 0.8em;
+    color: #007bff;
+}
